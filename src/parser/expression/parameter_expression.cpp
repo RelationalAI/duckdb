@@ -1,32 +1,36 @@
-#include "parser/expression/parameter_expression.hpp"
+#include "duckdb/parser/expression/parameter_expression.hpp"
 
-#include "common/exception.hpp"
-#include "common/serializer.hpp"
+#include "duckdb/common/exception.hpp"
+#include "duckdb/common/types/hash.hpp"
+#include "duckdb/common/to_string.hpp"
 
-using namespace duckdb;
-using namespace std;
+#include "duckdb/common/serializer/serializer.hpp"
+#include "duckdb/common/serializer/deserializer.hpp"
+
+namespace duckdb {
 
 ParameterExpression::ParameterExpression()
-    : ParsedExpression(ExpressionType::VALUE_PARAMETER, ExpressionClass::PARAMETER), parameter_nr(0) {
+    : ParsedExpression(ExpressionType::VALUE_PARAMETER, ExpressionClass::PARAMETER) {
 }
 
 string ParameterExpression::ToString() const {
-	return "$" + std::to_string(parameter_nr);
+	return "$" + identifier;
 }
 
 unique_ptr<ParsedExpression> ParameterExpression::Copy() const {
-	auto copy = make_unique<ParameterExpression>();
+	auto copy = make_uniq<ParameterExpression>();
+	copy->identifier = identifier;
 	copy->CopyProperties(*this);
-	return move(copy);
+	return std::move(copy);
 }
 
-void ParameterExpression::Serialize(Serializer &serializer) {
-	ParsedExpression::Serialize(serializer);
-	serializer.Write<index_t>(parameter_nr);
+bool ParameterExpression::Equal(const ParameterExpression &a, const ParameterExpression &b) {
+	return StringUtil::CIEquals(a.identifier, b.identifier);
 }
 
-unique_ptr<ParsedExpression> ParameterExpression::Deserialize(ExpressionType type, Deserializer &source) {
-	auto expression = make_unique<ParameterExpression>();
-	expression->parameter_nr = source.Read<index_t>();
-	return move(expression);
+hash_t ParameterExpression::Hash() const {
+	hash_t result = ParsedExpression::Hash();
+	return CombineHash(duckdb::Hash(identifier.c_str(), identifier.size()), result);
 }
+
+} // namespace duckdb

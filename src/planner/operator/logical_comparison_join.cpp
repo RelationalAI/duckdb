@@ -1,54 +1,23 @@
-#include "planner/operator/logical_comparison_join.hpp"
+#include "duckdb/common/string_util.hpp"
+#include "duckdb/planner/operator/logical_comparison_join.hpp"
+#include "duckdb/planner/expression/bound_comparison_expression.hpp"
+#include "duckdb/common/enum_util.hpp"
+namespace duckdb {
 
-using namespace duckdb;
-using namespace std;
-
-LogicalComparisonJoin::LogicalComparisonJoin(JoinType type, LogicalOperatorType logical_type)
-    : LogicalJoin(type, logical_type) {
+LogicalComparisonJoin::LogicalComparisonJoin(JoinType join_type, LogicalOperatorType logical_type)
+    : LogicalJoin(join_type, logical_type) {
 }
 
 string LogicalComparisonJoin::ParamsToString() const {
-	string result = "";
-	if (conditions.size() > 0) {
-		result += "[";
-		for (index_t i = 0; i < conditions.size(); i++) {
-			auto &cond = conditions[i];
-			result += ExpressionTypeToString(cond.comparison) + "(" + cond.left->GetName() + ", " +
-			          cond.right->GetName() + ")";
-			if (i < conditions.size() - 1) {
-				result += ", ";
-			}
-		}
-		result += "]";
+	string result = EnumUtil::ToChars(join_type);
+	for (auto &condition : conditions) {
+		result += "\n";
+		auto expr =
+		    make_uniq<BoundComparisonExpression>(condition.comparison, condition.left->Copy(), condition.right->Copy());
+		result += expr->ToString();
 	}
 
 	return result;
 }
 
-count_t LogicalComparisonJoin::ExpressionCount() {
-	assert(expressions.size() == 0);
-	return conditions.size() * 2;
-}
-
-Expression *LogicalComparisonJoin::GetExpression(index_t index) {
-	assert(expressions.size() == 0);
-	assert(index < conditions.size() * 2);
-	auto condition = index / 2;
-	bool left = index % 2 == 0 ? true : false;
-	assert(condition < conditions.size());
-	return left ? conditions[condition].left.get() : conditions[condition].right.get();
-}
-
-void LogicalComparisonJoin::ReplaceExpression(
-    std::function<unique_ptr<Expression>(unique_ptr<Expression> expression)> callback, index_t index) {
-	assert(expressions.size() == 0);
-	assert(index < conditions.size() * 2);
-	auto condition = index / 2;
-	bool left = index % 2 == 0 ? true : false;
-	assert(condition < conditions.size());
-	if (left) {
-		conditions[condition].left = callback(move(conditions[condition].left));
-	} else {
-		conditions[condition].right = callback(move(conditions[condition].right));
-	}
-}
+} // namespace duckdb

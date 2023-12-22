@@ -1,277 +1,384 @@
-#include "common/types/data_chunk.hpp"
+#include "duckdb/common/types/data_chunk.hpp"
 
-#include "common/exception.hpp"
-#include "common/helper.hpp"
-#include "common/printer.hpp"
-#include "common/serializer.hpp"
-#include "common/types/null_value.hpp"
-#include "common/vector_operations/vector_operations.hpp"
+#include "duckdb/common/array.hpp"
+#include "duckdb/common/exception.hpp"
+#include "duckdb/common/helper.hpp"
+#include "duckdb/common/printer.hpp"
+#include "duckdb/common/serializer/serializer.hpp"
+#include "duckdb/common/serializer/deserializer.hpp"
+#include "duckdb/common/types/interval.hpp"
+#include "duckdb/common/types/sel_cache.hpp"
+#include "duckdb/common/types/vector_cache.hpp"
+#include "duckdb/common/vector.hpp"
+#include "duckdb/common/vector_operations/vector_operations.hpp"
+#include "duckdb/execution/execution_context.hpp"
 
-using namespace duckdb;
-using namespace std;
+#include "duckdb/common/serializer/memory_stream.hpp"
+#include "duckdb/common/serializer/binary_serializer.hpp"
+#include "duckdb/common/serializer/binary_deserializer.hpp"
 
-DataChunk::DataChunk() : column_count(0), data(nullptr), sel_vector(nullptr) {
+namespace duckdb {
+
+DataChunk::DataChunk() : count(0), capacity(STANDARD_VECTOR_SIZE) {
 }
 
-void DataChunk::Initialize(vector<TypeId> &types, bool zero_data) {
-	column_count = types.size();
-	index_t size = 0;
-	for (auto &type : types) {
-		size += GetTypeIdSize(type) * STANDARD_VECTOR_SIZE;
-	}
-	if (size > 0) {
-		owned_data = unique_ptr<data_t[]>(new data_t[size]);
-		if (zero_data) {
-			memset(owned_data.get(), 0, size);
-		}
-	}
+DataChunk::~DataChunk() {
+}
 
-	auto ptr = owned_data.get();
-	data = unique_ptr<Vector[]>(new Vector[types.size()]);
-	for (index_t i = 0; i < types.size(); i++) {
-		data[i].type = types[i];
-		data[i].data = ptr;
-		data[i].count = 0;
-		data[i].sel_vector = nullptr;
+void DataChunk::InitializeEmpty(const vector<LogicalType> &types) {
+	InitializeEmpty(types.begin(), types.end());
+}
 
-		ptr += GetTypeIdSize(types[i]) * STANDARD_VECTOR_SIZE;
+void DataChunk::Initialize(Allocator &allocator, const vector<LogicalType> &types, idx_t capacity_p) {
+	Initialize(allocator, types.begin(), types.end(), capacity_p);
+}
+
+void DataChunk::Initialize(ClientContext &context, const vector<LogicalType> &types, idx_t capacity_p) {
+	Initialize(Allocator::Get(context), types, capacity_p);
+}
+
+void DataChunk::Initialize(Allocator &allocator, vector<LogicalType>::const_iterator begin,
+                           vector<LogicalType>::const_iterator end, idx_t capacity_p) {
+	D_ASSERT(data.empty());                   // can only be initialized once
+	D_ASSERT(std::distance(begin, end) != 0); // empty chunk not allowed
+	capacity = capacity_p;
+	for (; begin != end; begin++) {
+		VectorCache cache(allocator, *begin, capacity);
+		data.emplace_back(cache);
+		vector_caches.push_back(std::move(cache));
+	}
+}
+
+void DataChunk::Initialize(ClientContext &context, vector<LogicalType>::const_iterator begin,
+                           vector<LogicalType>::const_iterator end, idx_t capacity_p) {
+	Initialize(Allocator::Get(context), begin, end, capacity_p);
+}
+
+void DataChunk::InitializeEmpty(vector<LogicalType>::const_iterator begin, vector<LogicalType>::const_iterator end) {
+	capacity = STANDARD_VECTOR_SIZE;
+	D_ASSERT(data.empty());                   // can only be initialized once
+	D_ASSERT(std::distance(begin, end) != 0); // empty chunk not allowed
+	for (; begin != end; begin++) {
+		data.emplace_back(*begin, nullptr);
 	}
 }
 
 void DataChunk::Reset() {
-	auto ptr = owned_data.get();
-	for (index_t i = 0; i < column_count; i++) {
-		data[i].data = ptr;
-		data[i].count = 0;
-		data[i].sel_vector = nullptr;
-		data[i].owned_data = nullptr;
-		data[i].string_heap.Destroy();
-		data[i].nullmask.reset();
-		ptr += GetTypeIdSize(data[i].type) * STANDARD_VECTOR_SIZE;
+	if (data.empty() || vector_caches.empty()) {
+		return;
 	}
-	sel_vector = nullptr;
+	if (vector_caches.size() != data.size()) {
+		throw InternalException("VectorCache and column count mismatch in DataChunk::Reset");
+	}
+	for (idx_t i = 0; i < ColumnCount(); i++) {
+		data[i].ResetFromCache(vector_caches[i]);
+	}
+	capacity = STANDARD_VECTOR_SIZE;
+	SetCardinality(0);
 }
 
 void DataChunk::Destroy() {
-	data = nullptr;
-	owned_data.reset();
-	sel_vector = nullptr;
-	column_count = 0;
+	data.clear();
+	vector_caches.clear();
+	capacity = 0;
+	SetCardinality(0);
 }
 
-void DataChunk::Copy(DataChunk &other, index_t offset) {
-	assert(column_count == other.column_count);
-	other.sel_vector = nullptr;
-
-	for (index_t i = 0; i < column_count; i++) {
-		data[i].Copy(other.data[i], offset);
-	}
+Value DataChunk::GetValue(idx_t col_idx, idx_t index) const {
+	D_ASSERT(index < size());
+	return data[col_idx].GetValue(index);
 }
 
-void DataChunk::Move(DataChunk &other) {
-	other.column_count = column_count;
-	other.data = move(data);
-	other.owned_data = move(owned_data);
-	if (sel_vector) {
-		other.sel_vector = sel_vector;
-		if (sel_vector == owned_sel_vector) {
-			// copy the owned selection vector
-			memcpy(other.owned_sel_vector, owned_sel_vector, STANDARD_VECTOR_SIZE * sizeof(sel_t));
+void DataChunk::SetValue(idx_t col_idx, idx_t index, const Value &val) {
+	data[col_idx].SetValue(index, val);
+}
+
+bool DataChunk::AllConstant() const {
+	for (auto &v : data) {
+		if (v.GetVectorType() != VectorType::CONSTANT_VECTOR) {
+			return false;
 		}
 	}
-	Destroy();
+	return true;
 }
 
-void DataChunk::Flatten() {
-	if (!sel_vector) {
-		return;
+void DataChunk::Reference(DataChunk &chunk) {
+	D_ASSERT(chunk.ColumnCount() <= ColumnCount());
+	SetCapacity(chunk);
+	SetCardinality(chunk);
+	for (idx_t i = 0; i < chunk.ColumnCount(); i++) {
+		data[i].Reference(chunk.data[i]);
 	}
-
-	for (index_t i = 0; i < column_count; i++) {
-		data[i].Flatten();
-	}
-	sel_vector = nullptr;
 }
 
-void DataChunk::Append(DataChunk &other) {
+void DataChunk::Move(DataChunk &chunk) {
+	SetCardinality(chunk);
+	SetCapacity(chunk);
+	data = std::move(chunk.data);
+	vector_caches = std::move(chunk.vector_caches);
+
+	chunk.Destroy();
+}
+
+void DataChunk::Copy(DataChunk &other, idx_t offset) const {
+	D_ASSERT(ColumnCount() == other.ColumnCount());
+	D_ASSERT(other.size() == 0);
+
+	for (idx_t i = 0; i < ColumnCount(); i++) {
+		D_ASSERT(other.data[i].GetVectorType() == VectorType::FLAT_VECTOR);
+		VectorOperations::Copy(data[i], other.data[i], size(), offset, 0);
+	}
+	other.SetCardinality(size() - offset);
+}
+
+void DataChunk::Copy(DataChunk &other, const SelectionVector &sel, const idx_t source_count, const idx_t offset) const {
+	D_ASSERT(ColumnCount() == other.ColumnCount());
+	D_ASSERT(other.size() == 0);
+	D_ASSERT((offset + source_count) <= size());
+
+	for (idx_t i = 0; i < ColumnCount(); i++) {
+		D_ASSERT(other.data[i].GetVectorType() == VectorType::FLAT_VECTOR);
+		VectorOperations::Copy(data[i], other.data[i], sel, source_count, offset, 0);
+	}
+	other.SetCardinality(source_count - offset);
+}
+
+void DataChunk::Split(DataChunk &other, idx_t split_idx) {
+	D_ASSERT(other.size() == 0);
+	D_ASSERT(other.data.empty());
+	D_ASSERT(split_idx < data.size());
+	const idx_t num_cols = data.size();
+	for (idx_t col_idx = split_idx; col_idx < num_cols; col_idx++) {
+		other.data.push_back(std::move(data[col_idx]));
+		other.vector_caches.push_back(std::move(vector_caches[col_idx]));
+	}
+	for (idx_t col_idx = split_idx; col_idx < num_cols; col_idx++) {
+		data.pop_back();
+		vector_caches.pop_back();
+	}
+	other.SetCapacity(*this);
+	other.SetCardinality(*this);
+}
+
+void DataChunk::Fuse(DataChunk &other) {
+	D_ASSERT(other.size() == size());
+	const idx_t num_cols = other.data.size();
+	for (idx_t col_idx = 0; col_idx < num_cols; ++col_idx) {
+		data.emplace_back(std::move(other.data[col_idx]));
+		vector_caches.emplace_back(std::move(other.vector_caches[col_idx]));
+	}
+	other.Destroy();
+}
+
+void DataChunk::ReferenceColumns(DataChunk &other, const vector<column_t> &column_ids) {
+	D_ASSERT(ColumnCount() == column_ids.size());
+	Reset();
+	for (idx_t col_idx = 0; col_idx < ColumnCount(); col_idx++) {
+		auto &other_col = other.data[column_ids[col_idx]];
+		auto &this_col = data[col_idx];
+		D_ASSERT(other_col.GetType() == this_col.GetType());
+		this_col.Reference(other_col);
+	}
+	SetCardinality(other.size());
+}
+
+void DataChunk::Append(const DataChunk &other, bool resize, SelectionVector *sel, idx_t sel_count) {
+	idx_t new_size = sel ? size() + sel_count : size() + other.size();
 	if (other.size() == 0) {
 		return;
 	}
-	if (column_count != other.column_count) {
-		throw OutOfRangeException("Column counts of appending chunk doesn't match!");
+	if (ColumnCount() != other.ColumnCount()) {
+		throw InternalException("Column counts of appending chunk doesn't match!");
 	}
-	for (index_t i = 0; i < column_count; i++) {
-		data[i].Append(other.data[i]);
-	}
-}
-
-void DataChunk::MergeSelVector(sel_t *current_vector, sel_t *new_vector, sel_t *result, index_t new_count) {
-	for (index_t i = 0; i < new_count; i++) {
-		result[i] = current_vector[new_vector[i]];
-	}
-}
-
-void DataChunk::SetSelectionVector(Vector &matches) {
-	if (matches.type != TypeId::BOOLEAN) {
-		throw InvalidTypeException(matches.type, "Can only set selection vector using a boolean vector!");
-	}
-	bool *match_data = (bool *)matches.data;
-	index_t match_count = 0;
-	if (sel_vector) {
-		assert(matches.sel_vector);
-		// existing selection vector: have to merge the selection vector
-		for (index_t i = 0; i < matches.count; i++) {
-			if (match_data[sel_vector[i]] && !matches.nullmask[sel_vector[i]]) {
-				owned_sel_vector[match_count++] = sel_vector[i];
+	if (new_size > capacity) {
+		if (resize) {
+			auto new_capacity = NextPowerOfTwo(new_size);
+			for (idx_t i = 0; i < ColumnCount(); i++) {
+				data[i].Resize(size(), new_capacity);
 			}
-		}
-		sel_vector = owned_sel_vector;
-	} else {
-		// no selection vector yet: can just set the selection vector
-		for (index_t i = 0; i < matches.count; i++) {
-			if (match_data[i] && !matches.nullmask[i]) {
-				owned_sel_vector[match_count++] = i;
-			}
-		}
-		if (match_count < matches.count) {
-			// we only have to set the selection vector if tuples were filtered
-			sel_vector = owned_sel_vector;
+			capacity = new_capacity;
+		} else {
+			throw InternalException("Can't append chunk to other chunk without resizing");
 		}
 	}
-	for (index_t i = 0; i < column_count; i++) {
-		data[i].count = match_count;
-		data[i].sel_vector = sel_vector;
+	for (idx_t i = 0; i < ColumnCount(); i++) {
+		D_ASSERT(data[i].GetVectorType() == VectorType::FLAT_VECTOR);
+		if (sel) {
+			VectorOperations::Copy(other.data[i], data[i], *sel, sel_count, 0, size());
+		} else {
+			VectorOperations::Copy(other.data[i], data[i], other.size(), 0, size());
+		}
+	}
+	SetCardinality(new_size);
+}
+
+void DataChunk::Flatten() {
+	for (idx_t i = 0; i < ColumnCount(); i++) {
+		data[i].Flatten(size());
 	}
 }
 
-vector<TypeId> DataChunk::GetTypes() {
-	vector<TypeId> types;
-	for (index_t i = 0; i < column_count; i++) {
-		types.push_back(data[i].type);
+vector<LogicalType> DataChunk::GetTypes() {
+	vector<LogicalType> types;
+	for (idx_t i = 0; i < ColumnCount(); i++) {
+		types.push_back(data[i].GetType());
 	}
 	return types;
 }
 
 string DataChunk::ToString() const {
-	string retval = "Chunk - [" + to_string(column_count) + " Columns]\n";
-	for (index_t i = 0; i < column_count; i++) {
-		retval += "- " + data[i].ToString() + "\n";
+	string retval = "Chunk - [" + to_string(ColumnCount()) + " Columns]\n";
+	for (idx_t i = 0; i < ColumnCount(); i++) {
+		retval += "- " + data[i].ToString(size()) + "\n";
 	}
 	return retval;
 }
 
-void DataChunk::Serialize(Serializer &serializer) {
+void DataChunk::Serialize(Serializer &serializer) const {
+
 	// write the count
-	serializer.Write<sel_t>(size());
-	serializer.Write<index_t>(column_count);
-	for (index_t i = 0; i < column_count; i++) {
-		// write the types
-		serializer.Write<int>((int)data[i].type);
-	}
+	auto row_count = size();
+	serializer.WriteProperty<sel_t>(100, "rows", row_count);
+
+	// we should never try to serialize empty data chunks
+	auto column_count = ColumnCount();
+	D_ASSERT(column_count);
+
+	// write the types
+	serializer.WriteList(101, "types", column_count,
+	                     [&](Serializer::List &list, idx_t i) { list.WriteElement(data[i].GetType()); });
+
 	// write the data
-	for (index_t i = 0; i < column_count; i++) {
-		auto type = data[i].type;
-		if (TypeIsConstantSize(type)) {
-			index_t write_size = GetTypeIdSize(type) * size();
-			auto ptr = unique_ptr<data_t[]>(new data_t[write_size]);
-			// constant size type: simple memcpy
-			VectorOperations::CopyToStorage(data[i], ptr.get());
-			serializer.WriteData(ptr.get(), write_size);
+	serializer.WriteList(102, "columns", column_count, [&](Serializer::List &list, idx_t i) {
+		list.WriteObject([&](Serializer &object) {
+			// Reference the vector to avoid potentially mutating it during serialization
+			Vector serialized_vector(data[i].GetType());
+			serialized_vector.Reference(data[i]);
+			serialized_vector.Serialize(object, row_count);
+		});
+	});
+}
+
+void DataChunk::Deserialize(Deserializer &deserializer) {
+
+	// read and set the row count
+	auto row_count = deserializer.ReadProperty<sel_t>(100, "rows");
+
+	// read the types
+	vector<LogicalType> types;
+	deserializer.ReadList(101, "types", [&](Deserializer::List &list, idx_t i) {
+		auto type = list.ReadElement<LogicalType>();
+		types.push_back(type);
+	});
+
+	// initialize the data chunk
+	D_ASSERT(!types.empty());
+	Initialize(Allocator::DefaultAllocator(), types);
+	SetCardinality(row_count);
+
+	// read the data
+	deserializer.ReadList(102, "columns", [&](Deserializer::List &list, idx_t i) {
+		list.ReadObject([&](Deserializer &object) { data[i].Deserialize(object, row_count); });
+	});
+}
+
+void DataChunk::Slice(const SelectionVector &sel_vector, idx_t count_p) {
+	this->count = count_p;
+	SelCache merge_cache;
+	for (idx_t c = 0; c < ColumnCount(); c++) {
+		data[c].Slice(sel_vector, count_p, merge_cache);
+	}
+}
+
+void DataChunk::Slice(DataChunk &other, const SelectionVector &sel, idx_t count_p, idx_t col_offset) {
+	D_ASSERT(other.ColumnCount() <= col_offset + ColumnCount());
+	this->count = count_p;
+	SelCache merge_cache;
+	for (idx_t c = 0; c < other.ColumnCount(); c++) {
+		if (other.data[c].GetVectorType() == VectorType::DICTIONARY_VECTOR) {
+			// already a dictionary! merge the dictionaries
+			data[col_offset + c].Reference(other.data[c]);
+			data[col_offset + c].Slice(sel, count_p, merge_cache);
 		} else {
-			assert(type == TypeId::VARCHAR);
-			// strings are inlined into the blob
-			// we use null-padding to store them
-			auto strings = (const char **)data[i].data;
-			for (index_t j = 0; j < size(); j++) {
-				auto source = strings[j] ? strings[j] : NullValue<const char *>();
-				serializer.WriteString(source);
-			}
+			data[col_offset + c].Slice(other.data[c], sel, count_p);
 		}
 	}
 }
 
-void DataChunk::Deserialize(Deserializer &source) {
-	auto rows = source.Read<sel_t>();
-	column_count = source.Read<index_t>();
-
-	vector<TypeId> types;
-	for (index_t i = 0; i < column_count; i++) {
-		types.push_back((TypeId)source.Read<int>());
+void DataChunk::Slice(idx_t offset, idx_t slice_count) {
+	D_ASSERT(offset + slice_count <= size());
+	SelectionVector sel(slice_count);
+	for (idx_t i = 0; i < slice_count; i++) {
+		sel.set_index(i, offset + i);
 	}
-	Initialize(types);
-	// now load the column data
-	for (index_t i = 0; i < column_count; i++) {
-		auto type = data[i].type;
-		if (TypeIsConstantSize(type)) {
-			// constant size type: simple memcpy
-			auto column_size = GetTypeIdSize(type) * rows;
-			auto ptr = unique_ptr<data_t[]>(new data_t[column_size]);
-			source.ReadData(ptr.get(), column_size);
-			Vector v(data[i].type, ptr.get());
-			v.count = rows;
-			VectorOperations::AppendFromStorage(v, data[i]);
-		} else {
-			auto strings = (const char **)data[i].data;
-			for (index_t j = 0; j < rows; j++) {
-				// read the strings
-				auto str = source.Read<string>();
-				// now add the string to the StringHeap of the vector
-				// and write the pointer into the vector
-				if (IsNullValue<const char *>((const char *)str.c_str())) {
-					strings[j] = nullptr;
-					data[i].nullmask[j] = true;
-				} else {
-					strings[j] = data[i].string_heap.AddString(str);
-				}
-			}
-		}
-		data[i].count = rows;
-	}
-	Verify();
+	Slice(sel, slice_count);
 }
 
-void DataChunk::MoveStringsToHeap(StringHeap &heap) {
-	for (index_t c = 0; c < column_count; c++) {
-		if (data[c].type == TypeId::VARCHAR) {
-			// move strings of this chunk to the specified heap
-			auto source_strings = (const char **)data[c].data;
-			if (!data[c].owned_data) {
-				data[c].owned_data = unique_ptr<data_t[]>(new data_t[STANDARD_VECTOR_SIZE * sizeof(data_ptr_t)]);
-				data[c].data = data[c].owned_data.get();
-			}
-			auto target_strings = (const char **)data[c].data;
-			VectorOperations::ExecType<const char *>(data[c], [&](const char *str, index_t i, index_t k) {
-				if (!data[c].nullmask[i]) {
-					target_strings[i] = heap.AddString(source_strings[i]);
-				}
-			});
-		}
+unsafe_unique_array<UnifiedVectorFormat> DataChunk::ToUnifiedFormat() {
+	auto unified_data = make_unsafe_uniq_array<UnifiedVectorFormat>(ColumnCount());
+	for (idx_t col_idx = 0; col_idx < ColumnCount(); col_idx++) {
+		data[col_idx].ToUnifiedFormat(size(), unified_data[col_idx]);
 	}
+	return unified_data;
 }
 
 void DataChunk::Hash(Vector &result) {
-	assert(result.type == TypeId::HASH);
-	VectorOperations::Hash(data[0], result);
-	for (index_t i = 1; i < column_count; i++) {
-		VectorOperations::CombineHash(result, data[i]);
+	D_ASSERT(result.GetType().id() == LogicalType::HASH);
+	VectorOperations::Hash(data[0], result, size());
+	for (idx_t i = 1; i < ColumnCount(); i++) {
+		VectorOperations::CombineHash(result, data[i], size());
+	}
+}
+
+void DataChunk::Hash(vector<idx_t> &column_ids, Vector &result) {
+	D_ASSERT(result.GetType().id() == LogicalType::HASH);
+	D_ASSERT(!column_ids.empty());
+
+	VectorOperations::Hash(data[column_ids[0]], result, size());
+	for (idx_t i = 1; i < column_ids.size(); i++) {
+		VectorOperations::CombineHash(result, data[column_ids[i]], size());
 	}
 }
 
 void DataChunk::Verify() {
 #ifdef DEBUG
+	D_ASSERT(size() <= capacity);
+
 	// verify that all vectors in this chunk have the chunk selection vector
-	sel_t *v = sel_vector;
-	for (index_t i = 0; i < column_count; i++) {
-		assert(data[i].sel_vector == v);
-		data[i].Verify();
+	for (idx_t i = 0; i < ColumnCount(); i++) {
+		data[i].Verify(size());
 	}
-	// verify that all vectors in the chunk have the same count
-	for (index_t i = 0; i < column_count; i++) {
-		assert(size() == data[i].count);
+
+	if (!ColumnCount()) {
+		// don't try to round-trip dummy data chunks with no data
+		// e.g., these exist in queries like 'SELECT distinct(col0, col1) FROM tbl', where we have groups, but no
+		// payload so the payload will be such an empty data chunk
+		return;
 	}
+
+	// verify that we can round-trip chunk serialization
+	MemoryStream mem_stream;
+	BinarySerializer serializer(mem_stream);
+
+	serializer.Begin();
+	Serialize(serializer);
+	serializer.End();
+
+	mem_stream.Rewind();
+
+	BinaryDeserializer deserializer(mem_stream);
+	DataChunk new_chunk;
+
+	deserializer.Begin();
+	new_chunk.Deserialize(deserializer);
+	deserializer.End();
+
+	D_ASSERT(size() == new_chunk.size());
 #endif
 }
 
-void DataChunk::Print() {
+void DataChunk::Print() const {
 	Printer::Print(ToString());
 }
+
+} // namespace duckdb

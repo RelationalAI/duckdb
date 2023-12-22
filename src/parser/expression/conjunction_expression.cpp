@@ -1,49 +1,60 @@
-#include "parser/expression/conjunction_expression.hpp"
+#include "duckdb/parser/expression/conjunction_expression.hpp"
+#include "duckdb/common/exception.hpp"
+#include "duckdb/parser/expression_util.hpp"
 
-#include "common/exception.hpp"
-#include "parser/expression/cast_expression.hpp"
+#include "duckdb/common/serializer/serializer.hpp"
+#include "duckdb/common/serializer/deserializer.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
+
+ConjunctionExpression::ConjunctionExpression(ExpressionType type)
+    : ParsedExpression(type, ExpressionClass::CONJUNCTION) {
+}
+
+ConjunctionExpression::ConjunctionExpression(ExpressionType type, vector<unique_ptr<ParsedExpression>> children)
+    : ParsedExpression(type, ExpressionClass::CONJUNCTION) {
+	for (auto &child : children) {
+		AddExpression(std::move(child));
+	}
+}
 
 ConjunctionExpression::ConjunctionExpression(ExpressionType type, unique_ptr<ParsedExpression> left,
                                              unique_ptr<ParsedExpression> right)
-    : ParsedExpression(type, ExpressionClass::CONJUNCTION), left(move(left)), right(move(right)) {
+    : ParsedExpression(type, ExpressionClass::CONJUNCTION) {
+	AddExpression(std::move(left));
+	AddExpression(std::move(right));
+}
+
+void ConjunctionExpression::AddExpression(unique_ptr<ParsedExpression> expr) {
+	if (expr->type == type) {
+		// expr is a conjunction of the same type: merge the expression lists together
+		auto &other = expr->Cast<ConjunctionExpression>();
+		for (auto &child : other.children) {
+			children.push_back(std::move(child));
+		}
+	} else {
+		children.push_back(std::move(expr));
+	}
 }
 
 string ConjunctionExpression::ToString() const {
-	return left->ToString() + " " + ExpressionTypeToOperator(type) + " " + right->ToString();
+	return ToString<ConjunctionExpression, ParsedExpression>(*this);
 }
 
-bool ConjunctionExpression::Equals(const BaseExpression *other_) const {
-	if (!BaseExpression::Equals(other_)) {
-		return false;
-	}
-	auto other = (ConjunctionExpression *)other_;
-	// conjunctions are Commutative
-	if (left->Equals(other->left.get()) && right->Equals(other->right.get())) {
-		return true;
-	}
-	if (right->Equals(other->left.get()) && left->Equals(other->right.get())) {
-		return true;
-	}
-	return false;
+bool ConjunctionExpression::Equal(const ConjunctionExpression &a, const ConjunctionExpression &b) {
+	return ExpressionUtil::SetEquals(a.children, b.children);
 }
 
 unique_ptr<ParsedExpression> ConjunctionExpression::Copy() const {
-	auto copy = make_unique<ConjunctionExpression>(type, left->Copy(), right->Copy());
+	vector<unique_ptr<ParsedExpression>> copy_children;
+	copy_children.reserve(children.size());
+	for (auto &expr : children) {
+		copy_children.push_back(expr->Copy());
+	}
+
+	auto copy = make_uniq<ConjunctionExpression>(type, std::move(copy_children));
 	copy->CopyProperties(*this);
-	return move(copy);
+	return std::move(copy);
 }
 
-void ConjunctionExpression::Serialize(Serializer &serializer) {
-	ParsedExpression::Serialize(serializer);
-	left->Serialize(serializer);
-	right->Serialize(serializer);
-}
-
-unique_ptr<ParsedExpression> ConjunctionExpression::Deserialize(ExpressionType type, Deserializer &source) {
-	auto left_child = ParsedExpression::Deserialize(source);
-	auto right_child = ParsedExpression::Deserialize(source);
-	return make_unique<ConjunctionExpression>(type, move(left_child), move(right_child));
-}
+} // namespace duckdb

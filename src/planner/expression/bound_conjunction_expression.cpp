@@ -1,34 +1,43 @@
-#include "planner/expression/bound_conjunction_expression.hpp"
+#include "duckdb/planner/expression/bound_conjunction_expression.hpp"
+#include "duckdb/parser/expression/conjunction_expression.hpp"
+#include "duckdb/parser/expression_util.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
+
+BoundConjunctionExpression::BoundConjunctionExpression(ExpressionType type)
+    : Expression(type, ExpressionClass::BOUND_CONJUNCTION, LogicalType::BOOLEAN) {
+}
 
 BoundConjunctionExpression::BoundConjunctionExpression(ExpressionType type, unique_ptr<Expression> left,
                                                        unique_ptr<Expression> right)
-    : Expression(type, ExpressionClass::BOUND_CONJUNCTION, TypeId::BOOLEAN), left(move(left)), right(move(right)) {
+    : BoundConjunctionExpression(type) {
+	children.push_back(std::move(left));
+	children.push_back(std::move(right));
 }
 
 string BoundConjunctionExpression::ToString() const {
-	return left->GetName() + " " + ExpressionTypeToOperator(type) + " " + right->GetName();
+	return ConjunctionExpression::ToString<BoundConjunctionExpression, Expression>(*this);
 }
 
-bool BoundConjunctionExpression::Equals(const BaseExpression *other_) const {
-	if (!BaseExpression::Equals(other_)) {
+bool BoundConjunctionExpression::Equals(const BaseExpression &other_p) const {
+	if (!Expression::Equals(other_p)) {
 		return false;
 	}
-	auto other = (BoundConjunctionExpression *)other_;
-	// conjunctions are commutative
-	if (Expression::Equals(left.get(), other->left.get()) && Expression::Equals(right.get(), other->right.get())) {
-		return true;
-	}
-	if (Expression::Equals(left.get(), other->right.get()) && Expression::Equals(right.get(), other->left.get())) {
-		return true;
-	}
+	auto &other = other_p.Cast<BoundConjunctionExpression>();
+	return ExpressionUtil::SetEquals(children, other.children);
+}
+
+bool BoundConjunctionExpression::PropagatesNullValues() const {
 	return false;
 }
 
 unique_ptr<Expression> BoundConjunctionExpression::Copy() {
-	auto copy = make_unique<BoundConjunctionExpression>(type, left->Copy(), right->Copy());
+	auto copy = make_uniq<BoundConjunctionExpression>(type);
+	for (auto &expr : children) {
+		copy->children.push_back(expr->Copy());
+	}
 	copy->CopyProperties(*this);
-	return move(copy);
+	return std::move(copy);
 }
+
+} // namespace duckdb

@@ -1,69 +1,73 @@
-#include "optimizer/rule/arithmetic_simplification.hpp"
+#include "duckdb/optimizer/rule/arithmetic_simplification.hpp"
 
-#include "common/exception.hpp"
-#include "planner/expression/bound_constant_expression.hpp"
-#include "planner/expression/bound_operator_expression.hpp"
+#include "duckdb/common/exception.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/optimizer/expression_rewriter.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 ArithmeticSimplificationRule::ArithmeticSimplificationRule(ExpressionRewriter &rewriter) : Rule(rewriter) {
 	// match on an OperatorExpression that has a ConstantExpression as child
-	auto op = make_unique<OperatorExpressionMatcher>();
-	op->matchers.push_back(make_unique<ConstantExpressionMatcher>());
+	auto op = make_uniq<FunctionExpressionMatcher>();
+	op->matchers.push_back(make_uniq<ConstantExpressionMatcher>());
+	op->matchers.push_back(make_uniq<ExpressionMatcher>());
 	op->policy = SetMatcher::Policy::SOME;
-	// we match only on arithmetic expressions
-	vector<ExpressionType> arithmetic_types{ExpressionType::OPERATOR_ADD, ExpressionType::OPERATOR_SUBTRACT,
-	                                        ExpressionType::OPERATOR_MULTIPLY, ExpressionType::OPERATOR_DIVIDE};
-	op->expr_type = make_unique<ManyExpressionTypeMatcher>(arithmetic_types);
+	// we only match on simple arithmetic expressions (+, -, *, /)
+	op->function = make_uniq<ManyFunctionMatcher>(unordered_set<string> {"+", "-", "*", "//"});
 	// and only with numeric results
-	op->type = make_unique<IntegerTypeMatcher>();
-	root = move(op);
+	op->type = make_uniq<IntegerTypeMatcher>();
+	op->matchers[0]->type = make_uniq<IntegerTypeMatcher>();
+	op->matchers[1]->type = make_uniq<IntegerTypeMatcher>();
+	root = std::move(op);
 }
 
-unique_ptr<Expression> ArithmeticSimplificationRule::Apply(LogicalOperator &op, vector<Expression *> &bindings,
-                                                           bool &changes_made) {
-	auto root = (BoundOperatorExpression *)bindings[0];
-	auto constant = (BoundConstantExpression *)bindings[1];
-	int constant_child = root->children[0].get() == constant ? 0 : 1;
-	assert(root->children.size() == 2);
+unique_ptr<Expression> ArithmeticSimplificationRule::Apply(LogicalOperator &op, vector<reference<Expression>> &bindings,
+                                                           bool &changes_made, bool is_root) {
+	auto &root = bindings[0].get().Cast<BoundFunctionExpression>();
+	auto &constant = bindings[1].get().Cast<BoundConstantExpression>();
+	int constant_child = root.children[0].get() == &constant ? 0 : 1;
+	D_ASSERT(root.children.size() == 2);
+	(void)root;
 	// any arithmetic operator involving NULL is always NULL
-	if (constant->value.is_null) {
-		return make_unique<BoundConstantExpression>(Value(root->return_type));
+	if (constant.value.IsNull()) {
+		return make_uniq<BoundConstantExpression>(Value(root.return_type));
 	}
-	switch (root->type) {
-	case ExpressionType::OPERATOR_ADD:
-		if (constant->value == 0) {
+	auto &func_name = root.function.name;
+	if (func_name == "+") {
+		if (constant.value == 0) {
 			// addition with 0
 			// we can remove the entire operator and replace it with the non-constant child
-			return move(root->children[1 - constant_child]);
+			return std::move(root.children[1 - constant_child]);
 		}
-		break;
-	case ExpressionType::OPERATOR_SUBTRACT:
-		if (constant_child == 1 && constant->value == 0) {
+	} else if (func_name == "-") {
+		if (constant_child == 1 && constant.value == 0) {
 			// subtraction by 0
 			// we can remove the entire operator and replace it with the non-constant child
-			return move(root->children[1 - constant_child]);
+			return std::move(root.children[1 - constant_child]);
 		}
-		break;
-	case ExpressionType::OPERATOR_MULTIPLY:
-		if (constant->value == 1) {
+	} else if (func_name == "*") {
+		if (constant.value == 1) {
 			// multiply with 1, replace with non-constant child
-			return move(root->children[1 - constant_child]);
+			return std::move(root.children[1 - constant_child]);
+		} else if (constant.value == 0) {
+			// multiply by zero: replace with constant or null
+			return ExpressionRewriter::ConstantOrNull(std::move(root.children[1 - constant_child]),
+			                                          Value::Numeric(root.return_type, 0));
 		}
-		break;
-	default:
-		assert(root->type == ExpressionType::OPERATOR_DIVIDE);
+	} else if (func_name == "//") {
 		if (constant_child == 1) {
-			if (constant->value == 1) {
+			if (constant.value == 1) {
 				// divide by 1, replace with non-constant child
-				return move(root->children[1 - constant_child]);
-			} else if (constant->value == 0) {
+				return std::move(root.children[1 - constant_child]);
+			} else if (constant.value == 0) {
 				// divide by 0, replace with NULL
-				return make_unique<BoundConstantExpression>(Value(root->return_type));
+				return make_uniq<BoundConstantExpression>(Value(root.return_type));
 			}
 		}
-		break;
+	} else {
+		throw InternalException("Unrecognized function name in ArithmeticSimplificationRule");
 	}
 	return nullptr;
 }
+} // namespace duckdb

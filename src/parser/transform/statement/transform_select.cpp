@@ -1,34 +1,36 @@
-#include "parser/statement/select_statement.hpp"
-#include "parser/transformer.hpp"
+#include "duckdb/parser/statement/select_statement.hpp"
+#include "duckdb/parser/transformer.hpp"
+#include "duckdb/common/string_util.hpp"
 
-using namespace duckdb;
-using namespace postgres;
-using namespace std;
+namespace duckdb {
 
-unique_ptr<SelectStatement> Transformer::TransformSelect(Node *node) {
-	SelectStmt *stmt = reinterpret_cast<SelectStmt *>(node);
-	auto result = make_unique<SelectStatement>();
+unique_ptr<QueryNode> Transformer::TransformSelectNode(duckdb_libpgquery::PGSelectStmt &select) {
+	if (select.pivot) {
+		return TransformPivotStatement(select);
+	} else {
+		return TransformSelectInternal(select);
+	}
+}
 
-	if (stmt->windowClause) {
-		for (auto window_ele = stmt->windowClause->head; window_ele != NULL; window_ele = window_ele->next) {
-			auto window_def = reinterpret_cast<WindowDef *>(window_ele->data.ptr_value);
-			assert(window_def);
-			assert(window_def->name);
-			auto window_name = StringUtil::Lower(string(window_def->name));
+unique_ptr<SelectStatement> Transformer::TransformSelect(duckdb_libpgquery::PGSelectStmt &select, bool is_select) {
+	auto result = make_uniq<SelectStatement>();
 
-			auto it = window_clauses.find(window_name);
-			if (it != window_clauses.end()) {
-				throw Exception("A window specification needs an unique name");
-			}
-			window_clauses[window_name] = window_def;
+	// Both Insert/Create Table As uses this.
+	if (is_select) {
+		if (select.intoClause) {
+			throw ParserException("SELECT INTO not supported!");
+		}
+		if (select.lockingClause) {
+			throw ParserException("SELECT locking clause is not supported!");
 		}
 	}
 
-	// may contain windows so second
-	if (stmt->withClause) {
-		TransformCTE(reinterpret_cast<WithClause *>(stmt->withClause), *result);
-	}
-
-	result->node = TransformSelectNode(stmt);
+	result->node = TransformSelectNode(select);
 	return result;
 }
+
+unique_ptr<SelectStatement> Transformer::TransformSelect(optional_ptr<duckdb_libpgquery::PGNode> node, bool is_select) {
+	return TransformSelect(PGCast<duckdb_libpgquery::PGSelectStmt>(*node), is_select);
+}
+
+} // namespace duckdb

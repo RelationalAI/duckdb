@@ -1,92 +1,162 @@
-#include "common/exception.hpp"
-#include "parser/query_node/select_node.hpp"
-#include "parser/query_node/set_operation_node.hpp"
-#include "parser/statement/select_statement.hpp"
-#include "parser/transformer.hpp"
+#include "duckdb/common/exception.hpp"
+#include "duckdb/common/string_util.hpp"
+#include "duckdb/parser/expression/star_expression.hpp"
+#include "duckdb/parser/query_node/select_node.hpp"
+#include "duckdb/parser/query_node/set_operation_node.hpp"
+#include "duckdb/parser/statement/select_statement.hpp"
+#include "duckdb/parser/transformer.hpp"
+#include "duckdb/parser/query_node/cte_node.hpp"
 
-using namespace duckdb;
-using namespace postgres;
-using namespace std;
+namespace duckdb {
 
-unique_ptr<QueryNode> Transformer::TransformSelectNode(postgres::SelectStmt *stmt) {
+void Transformer::TransformModifiers(duckdb_libpgquery::PGSelectStmt &stmt, QueryNode &node) {
+	// transform the common properties
+	// both the set operations and the regular select can have an ORDER BY/LIMIT attached to them
+	vector<OrderByNode> orders;
+	TransformOrderBy(stmt.sortClause, orders);
+	if (!orders.empty()) {
+		auto order_modifier = make_uniq<OrderModifier>();
+		order_modifier->orders = std::move(orders);
+		node.modifiers.push_back(std::move(order_modifier));
+	}
+	if (stmt.limitCount || stmt.limitOffset) {
+		if (stmt.limitCount && stmt.limitCount->type == duckdb_libpgquery::T_PGLimitPercent) {
+			auto limit_percent_modifier = make_uniq<LimitPercentModifier>();
+			auto expr_node = PGPointerCast<duckdb_libpgquery::PGLimitPercent>(stmt.limitCount)->limit_percent;
+			limit_percent_modifier->limit = TransformExpression(expr_node);
+			if (stmt.limitOffset) {
+				limit_percent_modifier->offset = TransformExpression(stmt.limitOffset);
+			}
+			node.modifiers.push_back(std::move(limit_percent_modifier));
+		} else {
+			auto limit_modifier = make_uniq<LimitModifier>();
+			if (stmt.limitCount) {
+				limit_modifier->limit = TransformExpression(stmt.limitCount);
+			}
+			if (stmt.limitOffset) {
+				limit_modifier->offset = TransformExpression(stmt.limitOffset);
+			}
+			node.modifiers.push_back(std::move(limit_modifier));
+		}
+	}
+}
+
+unique_ptr<QueryNode> Transformer::TransformSelectInternal(duckdb_libpgquery::PGSelectStmt &stmt) {
+	D_ASSERT(stmt.type == duckdb_libpgquery::T_PGSelectStmt);
+	auto stack_checker = StackCheck();
+
 	unique_ptr<QueryNode> node;
-	switch (stmt->op) {
-	case SETOP_NONE: {
-		node = make_unique<SelectNode>();
-		auto result = (SelectNode *)node.get();
-		// checks distinct clause
-		if (stmt->distinctClause != NULL) {
-			result->select_distinct = true;
-			// checks distinct on clause
-			auto target = reinterpret_cast<Node *>(stmt->distinctClause->head->data.ptr_value);
-			if (target) {
-				//  add the columns defined in the ON clause to the select list
-				if (!TransformExpressionList(stmt->distinctClause, result->distinct_on_targets)) {
-					throw Exception("Failed to transform expression list from DISTINCT ON.");
+	vector<unique_ptr<CTENode>> materialized_ctes;
+
+	switch (stmt.op) {
+	case duckdb_libpgquery::PG_SETOP_NONE: {
+		node = make_uniq<SelectNode>();
+		auto &result = node->Cast<SelectNode>();
+		if (stmt.withClause) {
+			TransformCTE(*PGPointerCast<duckdb_libpgquery::PGWithClause>(stmt.withClause), node->cte_map,
+			             materialized_ctes);
+		}
+		if (stmt.windowClause) {
+			for (auto window_ele = stmt.windowClause->head; window_ele != nullptr; window_ele = window_ele->next) {
+				auto window_def = PGPointerCast<duckdb_libpgquery::PGWindowDef>(window_ele->data.ptr_value);
+				D_ASSERT(window_def);
+				D_ASSERT(window_def->name);
+				string window_name(window_def->name);
+				auto it = window_clauses.find(window_name);
+				if (it != window_clauses.end()) {
+					throw ParserException("window \"%s\" is already defined", window_name);
 				}
+				window_clauses[window_name] = window_def.get();
 			}
 		}
-		// from table
-		result->from_table = TransformFrom(stmt->fromClause);
-		// group by
-		TransformGroupBy(stmt->groupClause, result->groups);
-		result->having = TransformExpression(stmt->havingClause);
-		if (result->groups.size() == 0 && result->having) {
-			throw ParserException("a GROUP BY clause is required before HAVING");
+
+		// checks distinct clause
+		if (stmt.distinctClause != nullptr) {
+			auto modifier = make_uniq<DistinctModifier>();
+			// checks distinct on clause
+			auto target = PGPointerCast<duckdb_libpgquery::PGNode>(stmt.distinctClause->head->data.ptr_value);
+			if (target) {
+				//  add the columns defined in the ON clause to the select list
+				TransformExpressionList(*stmt.distinctClause, modifier->distinct_on_targets);
+			}
+			result.modifiers.push_back(std::move(modifier));
 		}
+
+		// do this early so the value lists also have a `FROM`
+		if (stmt.valuesLists) {
+			// VALUES list, create an ExpressionList
+			D_ASSERT(!stmt.fromClause);
+			result.from_table = TransformValuesList(stmt.valuesLists);
+			result.select_list.push_back(make_uniq<StarExpression>());
+		} else {
+			if (!stmt.targetList) {
+				throw ParserException("SELECT clause without selection list");
+			}
+			// select list
+			TransformExpressionList(*stmt.targetList, result.select_list);
+			result.from_table = TransformFrom(stmt.fromClause);
+		}
+
 		// where
-		result->where_clause = TransformExpression(stmt->whereClause);
-		// select list
-		if (!TransformExpressionList(stmt->targetList, result->select_list)) {
-			throw Exception("Failed to transform expression list.");
-		}
+		result.where_clause = TransformExpression(stmt.whereClause);
+		// group by
+		TransformGroupBy(stmt.groupClause, result);
+		// having
+		result.having = TransformExpression(stmt.havingClause);
+		// qualify
+		result.qualify = TransformExpression(stmt.qualifyClause);
+		// sample
+		result.sample = TransformSampleOptions(stmt.sampleOptions);
 		break;
 	}
-	case SETOP_UNION:
-	case SETOP_EXCEPT:
-	case SETOP_INTERSECT: {
-		node = make_unique<SetOperationNode>();
-		auto result = (SetOperationNode *)node.get();
-		result->left = TransformSelectNode(stmt->larg);
-		result->right = TransformSelectNode(stmt->rarg);
-		if (!result->left || !result->right) {
+	case duckdb_libpgquery::PG_SETOP_UNION:
+	case duckdb_libpgquery::PG_SETOP_EXCEPT:
+	case duckdb_libpgquery::PG_SETOP_INTERSECT:
+	case duckdb_libpgquery::PG_SETOP_UNION_BY_NAME: {
+		node = make_uniq<SetOperationNode>();
+		auto &result = node->Cast<SetOperationNode>();
+		if (stmt.withClause) {
+			TransformCTE(*PGPointerCast<duckdb_libpgquery::PGWithClause>(stmt.withClause), node->cte_map,
+			             materialized_ctes);
+		}
+		result.left = TransformSelectNode(*stmt.larg);
+		result.right = TransformSelectNode(*stmt.rarg);
+		if (!result.left || !result.right) {
 			throw Exception("Failed to transform setop children.");
 		}
 
-		result->select_distinct = true;
-		switch (stmt->op) {
-		case SETOP_UNION:
-			result->select_distinct = !stmt->all;
-			result->setop_type = SetOperationType::UNION;
+		result.setop_all = stmt.all;
+		switch (stmt.op) {
+		case duckdb_libpgquery::PG_SETOP_UNION:
+			result.setop_type = SetOperationType::UNION;
 			break;
-		case SETOP_EXCEPT:
-			result->setop_type = SetOperationType::EXCEPT;
+		case duckdb_libpgquery::PG_SETOP_EXCEPT:
+			result.setop_type = SetOperationType::EXCEPT;
 			break;
-		case SETOP_INTERSECT:
-			result->setop_type = SetOperationType::INTERSECT;
+		case duckdb_libpgquery::PG_SETOP_INTERSECT:
+			result.setop_type = SetOperationType::INTERSECT;
+			break;
+		case duckdb_libpgquery::PG_SETOP_UNION_BY_NAME:
+			result.setop_type = SetOperationType::UNION_BY_NAME;
 			break;
 		default:
 			throw Exception("Unexpected setop type");
 		}
-		// if we compute the distinct result here, we do not have to do this in
-		// the children. This saves a bunch of unnecessary DISTINCTs.
-		if (result->select_distinct) {
-			result->left->select_distinct = false;
-			result->right->select_distinct = false;
+		if (stmt.sampleOptions) {
+			throw ParserException("SAMPLE clause is only allowed in regular SELECT statements");
 		}
 		break;
 	}
 	default:
-		throw NotImplementedException("Statement type %d not implemented!", stmt->op);
+		throw NotImplementedException("Statement type %d not implemented!", stmt.op);
 	}
-	// transform the common properties
-	// both the set operations and the regular select can have an ORDER BY/LIMIT attached to them
-	TransformOrderBy(stmt->sortClause, node->orders);
-	if (stmt->limitCount) {
-		node->limit = TransformExpression(stmt->limitCount);
-	}
-	if (stmt->limitOffset) {
-		node->offset = TransformExpression(stmt->limitOffset);
-	}
+
+	TransformModifiers(stmt, *node);
+
+	// Handle materialized CTEs
+	node = Transformer::TransformMaterializedCTE(std::move(node), materialized_ctes);
+
 	return node;
 }
+
+} // namespace duckdb

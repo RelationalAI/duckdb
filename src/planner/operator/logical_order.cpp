@@ -1,20 +1,44 @@
-#include "planner/operator/logical_order.hpp"
+#include "duckdb/planner/operator/logical_order.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-count_t LogicalOrder::ExpressionCount() {
-	assert(expressions.size() == 0);
-	return orders.size();
+LogicalOrder::LogicalOrder(vector<BoundOrderByNode> orders)
+    : LogicalOperator(LogicalOperatorType::LOGICAL_ORDER_BY), orders(std::move(orders)) {
 }
 
-Expression *LogicalOrder::GetExpression(index_t index) {
-	assert(index < orders.size());
-	return orders[index].expression.get();
+vector<ColumnBinding> LogicalOrder::GetColumnBindings() {
+	auto child_bindings = children[0]->GetColumnBindings();
+	if (projections.empty()) {
+		return child_bindings;
+	}
+
+	vector<ColumnBinding> result;
+	for (auto &col_idx : projections) {
+		result.push_back(child_bindings[col_idx]);
+	}
+	return result;
 }
 
-void LogicalOrder::ReplaceExpression(std::function<unique_ptr<Expression>(unique_ptr<Expression> expression)> callback,
-                                     index_t index) {
-	assert(index < orders.size());
-	orders[index].expression = callback(move(orders[index].expression));
+string LogicalOrder::ParamsToString() const {
+	string result = "ORDERS:\n";
+	for (idx_t i = 0; i < orders.size(); i++) {
+		if (i > 0) {
+			result += "\n";
+		}
+		result += orders[i].expression->GetName();
+	}
+	return result;
 }
+
+void LogicalOrder::ResolveTypes() {
+	const auto child_types = children[0]->types;
+	if (projections.empty()) {
+		types = child_types;
+	} else {
+		for (auto &col_idx : projections) {
+			types.push_back(child_types[col_idx]);
+		}
+	}
+}
+
+} // namespace duckdb

@@ -1,9 +1,20 @@
-#include "planner/operator/logical_cross_product.hpp"
+#include "duckdb/planner/operator/logical_cross_product.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-void LogicalCrossProduct::ResolveTypes() {
-	types.insert(types.end(), children[0]->types.begin(), children[0]->types.end());
-	types.insert(types.end(), children[1]->types.begin(), children[1]->types.end());
+LogicalCrossProduct::LogicalCrossProduct(unique_ptr<LogicalOperator> left, unique_ptr<LogicalOperator> right)
+    : LogicalUnconditionalJoin(LogicalOperatorType::LOGICAL_CROSS_PRODUCT, std::move(left), std::move(right)) {
 }
+
+unique_ptr<LogicalOperator> LogicalCrossProduct::Create(unique_ptr<LogicalOperator> left,
+                                                        unique_ptr<LogicalOperator> right) {
+	if (left->type == LogicalOperatorType::LOGICAL_DUMMY_SCAN) {
+		return right;
+	}
+	if (right->type == LogicalOperatorType::LOGICAL_DUMMY_SCAN) {
+		return left;
+	}
+	return make_uniq<LogicalCrossProduct>(std::move(left), std::move(right));
+}
+
+} // namespace duckdb

@@ -15,12 +15,13 @@
 #define _POSIX_C_SOURCE 200809L
 #endif
 #include <unistd.h>
-#if defined(_POSIX_READER_WRITER_LOCKS) && _POSIX_READER_WRITER_LOCKS > 0
-#define MUTEX_IS_PTHREAD_RWLOCK
-#endif
+//#if defined(_POSIX_READER_WRITER_LOCKS) && _POSIX_READER_WRITER_LOCKS > 0
+//#define MUTEX_IS_PTHREAD_RWLOCK
+//#endif
 #endif
 
 #if defined(MUTEX_IS_PTHREAD_RWLOCK)
+#error We really dont want to include pthread
 #include <pthread.h>
 #include <stdlib.h>
 typedef pthread_rwlock_t MutexType;
@@ -29,7 +30,7 @@ typedef pthread_rwlock_t MutexType;
 typedef std::mutex MutexType;
 #endif
 
-namespace re2 {
+namespace duckdb_re2 {
 
 class Mutex {
  public:
@@ -126,6 +127,6 @@ class WriterMutexLock {
 #define ReaderMutexLock(x) static_assert(false, "ReaderMutexLock declaration missing variable name")
 #define WriterMutexLock(x) static_assert(false, "WriterMutexLock declaration missing variable name")
 
-}  // namespace re2
+}  // namespace duckdb_re2
 
 #endif  // UTIL_MUTEX_H_

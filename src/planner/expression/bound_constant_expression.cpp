@@ -1,34 +1,35 @@
-#include "planner/expression/bound_constant_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/common/types/hash.hpp"
+#include "duckdb/common/value_operations/value_operations.hpp"
 
-#include "common/types/hash.hpp"
-#include "common/value_operations/value_operations.hpp"
+namespace duckdb {
 
-using namespace duckdb;
-using namespace std;
-
-BoundConstantExpression::BoundConstantExpression(Value value)
-    : Expression(ExpressionType::VALUE_CONSTANT, ExpressionClass::BOUND_CONSTANT, value.type), value(value) {
+BoundConstantExpression::BoundConstantExpression(Value value_p)
+    : Expression(ExpressionType::VALUE_CONSTANT, ExpressionClass::BOUND_CONSTANT, value_p.type()),
+      value(std::move(value_p)) {
 }
 
 string BoundConstantExpression::ToString() const {
-	return value.ToString();
+	return value.ToSQLString();
 }
 
-bool BoundConstantExpression::Equals(const BaseExpression *other_) const {
-	if (!BaseExpression::Equals(other_)) {
+bool BoundConstantExpression::Equals(const BaseExpression &other_p) const {
+	if (!Expression::Equals(other_p)) {
 		return false;
 	}
-	auto other = (BoundConstantExpression *)other_;
-	return value == other->value;
+	auto &other = other_p.Cast<BoundConstantExpression>();
+	return value.type() == other.value.type() && !ValueOperations::DistinctFrom(value, other.value);
 }
 
-uint64_t BoundConstantExpression::Hash() const {
-	uint64_t result = Expression::Hash();
-	return CombineHash(ValueOperations::Hash(value), result);
+hash_t BoundConstantExpression::Hash() const {
+	hash_t result = Expression::Hash();
+	return CombineHash(value.Hash(), result);
 }
 
 unique_ptr<Expression> BoundConstantExpression::Copy() {
-	auto copy = make_unique<BoundConstantExpression>(value);
+	auto copy = make_uniq<BoundConstantExpression>(value);
 	copy->CopyProperties(*this);
-	return move(copy);
+	return std::move(copy);
 }
+
+} // namespace duckdb

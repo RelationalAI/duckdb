@@ -1,38 +1,62 @@
-#include "execution/operator/filter/physical_filter.hpp"
+#include "duckdb/execution/operator/filter/physical_filter.hpp"
+#include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/planner/expression/bound_conjunction_expression.hpp"
+#include "duckdb/parallel/thread_context.hpp"
+namespace duckdb {
 
-#include "execution/expression_executor.hpp"
-
-using namespace duckdb;
-using namespace std;
-
-void PhysicalFilter::GetChunkInternal(ClientContext &context, DataChunk &chunk, PhysicalOperatorState *state_) {
-	auto state = reinterpret_cast<PhysicalOperatorState *>(state_);
-	do {
-		children[0]->GetChunk(context, state->child_chunk, state->child_state.get());
-		if (state->child_chunk.size() == 0) {
-			return;
+PhysicalFilter::PhysicalFilter(vector<LogicalType> types, vector<unique_ptr<Expression>> select_list,
+                               idx_t estimated_cardinality)
+    : CachingPhysicalOperator(PhysicalOperatorType::FILTER, std::move(types), estimated_cardinality) {
+	D_ASSERT(select_list.size() > 0);
+	if (select_list.size() > 1) {
+		// create a big AND out of the expressions
+		auto conjunction = make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_AND);
+		for (auto &expr : select_list) {
+			conjunction->children.push_back(std::move(expr));
 		}
-
-		assert(expressions.size() > 0);
-
-		Vector result(TypeId::BOOLEAN, true, false);
-		ExpressionExecutor executor(state->child_chunk);
-		executor.Merge(expressions, result);
-
-		// now generate the selection vector
-		chunk.sel_vector = state->child_chunk.sel_vector;
-		for (index_t i = 0; i < chunk.column_count; i++) {
-			// create a reference to the vector of the child chunk
-			chunk.data[i].Reference(state->child_chunk.data[i]);
-		}
-		chunk.SetSelectionVector(result);
-	} while (chunk.size() == 0);
-}
-
-string PhysicalFilter::ExtraRenderInformation() const {
-	string extra_info;
-	for (auto &expr : expressions) {
-		extra_info += expr->GetName() + "\n";
+		expression = std::move(conjunction);
+	} else {
+		expression = std::move(select_list[0]);
 	}
-	return extra_info;
 }
+
+class FilterState : public CachingOperatorState {
+public:
+	explicit FilterState(ExecutionContext &context, Expression &expr)
+	    : executor(context.client, expr), sel(STANDARD_VECTOR_SIZE) {
+	}
+
+	ExpressionExecutor executor;
+	SelectionVector sel;
+
+public:
+	void Finalize(const PhysicalOperator &op, ExecutionContext &context) override {
+		context.thread.profiler.Flush(op, executor, "filter", 0);
+	}
+};
+
+unique_ptr<OperatorState> PhysicalFilter::GetOperatorState(ExecutionContext &context) const {
+	return make_uniq<FilterState>(context, *expression);
+}
+
+OperatorResultType PhysicalFilter::ExecuteInternal(ExecutionContext &context, DataChunk &input, DataChunk &chunk,
+                                                   GlobalOperatorState &gstate, OperatorState &state_p) const {
+	auto &state = state_p.Cast<FilterState>();
+	idx_t result_count = state.executor.SelectExpression(input, state.sel);
+	if (result_count == input.size()) {
+		// nothing was filtered: skip adding any selection vectors
+		chunk.Reference(input);
+	} else {
+		chunk.Slice(input, state.sel, result_count);
+	}
+	return OperatorResultType::NEED_MORE_INPUT;
+}
+
+string PhysicalFilter::ParamsToString() const {
+	auto result = expression->GetName();
+	result += "\n[INFOSEPARATOR]\n";
+	result += StringUtil::Format("EC: %llu", estimated_cardinality);
+	return result;
+}
+
+} // namespace duckdb

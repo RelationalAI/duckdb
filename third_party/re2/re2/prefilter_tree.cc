@@ -19,9 +19,7 @@
 #include "re2/prefilter.h"
 #include "re2/re2.h"
 
-namespace re2 {
-
-static const bool ExtraDebug = false;
+namespace duckdb_re2 {
 
 PrefilterTree::PrefilterTree()
     : compiled_(false),
@@ -100,9 +98,6 @@ void PrefilterTree::Compile(std::vector<std::string>* atom_vec) {
       }
     }
   }
-
-  if (ExtraDebug)
-    PrintDebugInfo(&nodes);
 }
 
 Prefilter* PrefilterTree::CanonicalNode(NodeMap* nodes, Prefilter* node) {
@@ -404,4 +399,4 @@ std::string PrefilterTree::DebugNodeString(Prefilter* node) const {
   return node_string;
 }
 
-}  // namespace re2
+}  // namespace duckdb_re2

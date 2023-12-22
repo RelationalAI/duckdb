@@ -17,9 +17,7 @@
 #include "re2/unicode_casefold.h"
 #include "re2/walker-inl.h"
 
-namespace re2 {
-
-static const bool ExtraDebug = false;
+namespace duckdb_re2 {
 
 typedef std::set<std::string>::iterator SSIter;
 typedef std::set<std::string>::const_iterator ConstSSIter;
@@ -451,12 +449,6 @@ Prefilter::Info* Prefilter::Info::EmptyString() {
 typedef CharClass::iterator CCIter;
 Prefilter::Info* Prefilter::Info::CClass(CharClass *cc,
                                          bool latin1) {
-  if (ExtraDebug) {
-    LOG(ERROR) << "CharClassInfo:";
-    for (CCIter i = cc->begin(); i != cc->end(); ++i)
-      LOG(ERROR) << "  " << i->lo << "-" << i->hi;
-  }
-
   // If the class is too large, it's okay to overestimate.
   if (cc->size() > 10)
     return AnyCharOrAnyByte();
@@ -473,9 +465,6 @@ Prefilter::Info* Prefilter::Info::CClass(CharClass *cc,
 
 
   a->is_exact_ = true;
-
-  if (ExtraDebug)
-    LOG(ERROR) << " = " << a->ToString();
 
   return a;
 }
@@ -502,9 +491,6 @@ class Prefilter::Info::Walker : public Regexp::Walker<Prefilter::Info*> {
 };
 
 Prefilter::Info* Prefilter::BuildInfo(Regexp* re) {
-  if (ExtraDebug)
-    LOG(ERROR) << "BuildPrefilter::Info: " << re->ToString();
-
   bool latin1 = (re->parse_flags() & Regexp::Latin1) != 0;
   Prefilter::Info::Walker w(latin1);
   Prefilter::Info* info = w.WalkExponential(re, NULL, 100000);
@@ -635,10 +621,6 @@ Prefilter::Info* Prefilter::Info::Walker::PostVisit(
       break;
   }
 
-  if (ExtraDebug)
-    LOG(ERROR) << "BuildInfo " << re->ToString()
-               << ": " << (info ? info->ToString() : "");
-
   return info;
 }
 
@@ -707,4 +689,4 @@ Prefilter* Prefilter::FromRE2(const RE2* re2) {
 }
 
 
-}  // namespace re2
+}  // namespace duckdb_re2

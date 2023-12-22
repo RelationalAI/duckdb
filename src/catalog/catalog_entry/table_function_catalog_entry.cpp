@@ -1,50 +1,31 @@
-#include "catalog/catalog_entry/table_function_catalog_entry.hpp"
+#include "duckdb/catalog/catalog_entry/table_function_catalog_entry.hpp"
+#include "duckdb/parser/parsed_data/alter_table_function_info.hpp"
 
-#include "common/exception.hpp"
-#include "parser/constraints/list.hpp"
-#include "parser/parsed_data/create_table_function_info.hpp"
-#include "storage/storage_manager.hpp"
+namespace duckdb {
 
-#include <algorithm>
+TableFunctionCatalogEntry::TableFunctionCatalogEntry(Catalog &catalog, SchemaCatalogEntry &schema,
+                                                     CreateTableFunctionInfo &info)
+    : FunctionEntry(CatalogType::TABLE_FUNCTION_ENTRY, catalog, schema, info), functions(std::move(info.functions)) {
+	D_ASSERT(this->functions.Size() > 0);
+}
 
-using namespace duckdb;
-using namespace std;
-
-TableFunctionCatalogEntry::TableFunctionCatalogEntry(Catalog *catalog, SchemaCatalogEntry *schema,
-                                                     CreateTableFunctionInfo *info)
-    : CatalogEntry(CatalogType::TABLE_FUNCTION, catalog, info->name), schema(schema) {
-	for (auto &entry : info->return_values) {
-		if (name_map.find(entry.name) != name_map.end()) {
-			throw CatalogException("Column with name %s already exists!", entry.name.c_str());
-		}
-
-		column_t oid = return_values.size();
-		name_map[entry.name] = oid;
-		entry.oid = oid;
-		return_values.push_back(move(entry));
+unique_ptr<CatalogEntry> TableFunctionCatalogEntry::AlterEntry(ClientContext &context, AlterInfo &info) {
+	if (info.type != AlterType::ALTER_TABLE_FUNCTION) {
+		throw InternalException("Attempting to alter TableFunctionCatalogEntry with unsupported alter type");
 	}
-	arguments = info->arguments;
-
-	init = info->init;
-	function = info->function;
-	final = info->final;
-}
-
-bool TableFunctionCatalogEntry::ColumnExists(const string &name) {
-	return name_map.find(name) != name_map.end();
-}
-
-ColumnDefinition &TableFunctionCatalogEntry::GetColumn(const string &name) {
-	if (!ColumnExists(name)) {
-		throw CatalogException("Column with name %s does not exist!", name.c_str());
+	auto &function_info = info.Cast<AlterTableFunctionInfo>();
+	if (function_info.alter_table_function_type != AlterTableFunctionType::ADD_FUNCTION_OVERLOADS) {
+		throw InternalException(
+		    "Attempting to alter TableFunctionCatalogEntry with unsupported alter table function type");
 	}
-	return return_values[name_map[name]];
+	auto &add_overloads = function_info.Cast<AddTableFunctionOverloadInfo>();
+
+	TableFunctionSet new_set = functions;
+	if (!new_set.MergeFunctionSet(add_overloads.new_overloads)) {
+		throw BinderException("Failed to add new function overloads to function \"%s\": function already exists", name);
+	}
+	CreateTableFunctionInfo new_info(std::move(new_set));
+	return make_uniq<TableFunctionCatalogEntry>(catalog, schema, new_info);
 }
 
-vector<TypeId> TableFunctionCatalogEntry::GetTypes() {
-	vector<TypeId> types;
-	for (auto &it : return_values) {
-		types.push_back(GetInternalType(it.type));
-	}
-	return types;
-}
+} // namespace duckdb

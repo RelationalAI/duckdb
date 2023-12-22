@@ -1,178 +1,208 @@
-#include "optimizer/optimizer.hpp"
+#include "duckdb/optimizer/optimizer.hpp"
 
-#include "execution/expression_executor.hpp"
-#include "main/client_context.hpp"
-#include "optimizer/ca_optimizer.hpp"
-#include "optimizer/cse_optimizer.hpp"
-#include "optimizer/filter_pushdown.hpp"
-#include "optimizer/index_scan.hpp"
-#include "optimizer/join_order_optimizer.hpp"
-#include "optimizer/regex_range_filter.hpp"
-#include "optimizer/rule/list.hpp"
-#include "planner/binder.hpp"
-#include "planner/expression/bound_columnref_expression.hpp"
-#include "planner/expression/bound_operator_expression.hpp"
-#include "planner/expression/common_subexpression.hpp"
-#include "planner/operator/list.hpp"
+#include "duckdb/execution/column_binding_resolver.hpp"
+#include "duckdb/main/client_context.hpp"
+#include "duckdb/main/config.hpp"
+#include "duckdb/main/query_profiler.hpp"
+#include "duckdb/optimizer/column_lifetime_optimizer.hpp"
+#include "duckdb/optimizer/common_aggregate_optimizer.hpp"
+#include "duckdb/optimizer/compressed_materialization.hpp"
+#include "duckdb/optimizer/cse_optimizer.hpp"
+#include "duckdb/optimizer/deliminator.hpp"
+#include "duckdb/optimizer/expression_heuristics.hpp"
+#include "duckdb/optimizer/filter_pullup.hpp"
+#include "duckdb/optimizer/filter_pushdown.hpp"
+#include "duckdb/optimizer/in_clause_rewriter.hpp"
+#include "duckdb/optimizer/join_order/join_order_optimizer.hpp"
+#include "duckdb/optimizer/regex_range_filter.hpp"
+#include "duckdb/optimizer/remove_duplicate_groups.hpp"
+#include "duckdb/optimizer/remove_unused_columns.hpp"
+#include "duckdb/optimizer/rule/equal_or_null_simplification.hpp"
+#include "duckdb/optimizer/rule/in_clause_simplification.hpp"
+#include "duckdb/optimizer/rule/list.hpp"
+#include "duckdb/optimizer/statistics_propagator.hpp"
+#include "duckdb/optimizer/topn_optimizer.hpp"
+#include "duckdb/optimizer/unnest_rewriter.hpp"
+#include "duckdb/planner/binder.hpp"
+#include "duckdb/planner/planner.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 Optimizer::Optimizer(Binder &binder, ClientContext &context) : context(context), binder(binder), rewriter(context) {
-	rewriter.rules.push_back(make_unique<ConstantFoldingRule>(rewriter));
-	rewriter.rules.push_back(make_unique<DistributivityRule>(rewriter));
-	rewriter.rules.push_back(make_unique<ArithmeticSimplificationRule>(rewriter));
-	rewriter.rules.push_back(make_unique<CaseSimplificationRule>(rewriter));
-	rewriter.rules.push_back(make_unique<ConjunctionSimplificationRule>(rewriter));
-	rewriter.rules.push_back(make_unique<ComparisonSimplificationRule>(rewriter));
-	rewriter.rules.push_back(make_unique<MoveConstantsRule>(rewriter));
+	rewriter.rules.push_back(make_uniq<ConstantFoldingRule>(rewriter));
+	rewriter.rules.push_back(make_uniq<DistributivityRule>(rewriter));
+	rewriter.rules.push_back(make_uniq<ArithmeticSimplificationRule>(rewriter));
+	rewriter.rules.push_back(make_uniq<CaseSimplificationRule>(rewriter));
+	rewriter.rules.push_back(make_uniq<ConjunctionSimplificationRule>(rewriter));
+	rewriter.rules.push_back(make_uniq<DatePartSimplificationRule>(rewriter));
+	rewriter.rules.push_back(make_uniq<ComparisonSimplificationRule>(rewriter));
+	rewriter.rules.push_back(make_uniq<InClauseSimplificationRule>(rewriter));
+	rewriter.rules.push_back(make_uniq<EqualOrNullSimplification>(rewriter));
+	rewriter.rules.push_back(make_uniq<MoveConstantsRule>(rewriter));
+	rewriter.rules.push_back(make_uniq<LikeOptimizationRule>(rewriter));
+	rewriter.rules.push_back(make_uniq<OrderedAggregateOptimizer>(rewriter));
+	rewriter.rules.push_back(make_uniq<RegexOptimizationRule>(rewriter));
+	rewriter.rules.push_back(make_uniq<EmptyNeedleRemovalRule>(rewriter));
+	rewriter.rules.push_back(make_uniq<EnumComparisonRule>(rewriter));
 
 #ifdef DEBUG
 	for (auto &rule : rewriter.rules) {
 		// root not defined in rule
-		assert(rule->root);
+		D_ASSERT(rule->root);
 	}
 #endif
 }
 
-namespace duckdb {
+ClientContext &Optimizer::GetContext() {
+	return context;
+}
 
-class InClauseRewriter : public LogicalOperatorVisitor {
-public:
-	InClauseRewriter(Optimizer &optimizer) : optimizer(optimizer) {
+void Optimizer::RunOptimizer(OptimizerType type, const std::function<void()> &callback) {
+	auto &config = DBConfig::GetConfig(context);
+	if (config.options.disabled_optimizers.find(type) != config.options.disabled_optimizers.end()) {
+		// optimizer is marked as disabled: skip
+		return;
+	}
+	auto &profiler = QueryProfiler::Get(context);
+	profiler.StartPhase(OptimizerTypeToString(type));
+	callback();
+	profiler.EndPhase();
+	if (plan) {
+		Verify(*plan);
+	}
+}
+
+void Optimizer::Verify(LogicalOperator &op) {
+	ColumnBindingResolver::Verify(op);
+}
+
+unique_ptr<LogicalOperator> Optimizer::Optimize(unique_ptr<LogicalOperator> plan_p) {
+	Verify(*plan_p);
+
+	switch (plan_p->type) {
+	case LogicalOperatorType::LOGICAL_TRANSACTION:
+		return plan_p; // skip optimizing simple & often-occurring plans unaffected by rewrites
+	default:
+		break;
 	}
 
-	Optimizer &optimizer;
-	unique_ptr<LogicalOperator> root;
-
-	unique_ptr<LogicalOperator> Rewrite(unique_ptr<LogicalOperator> op) {
-		if (op->children.size() == 1) {
-			root = move(op->children[0]);
-			VisitOperatorExpressions(*op);
-			op->children[0] = move(root);
-		}
-
-		for (auto &child : op->children) {
-			child = Rewrite(move(child));
-		}
-		return op;
-	}
-
-	unique_ptr<Expression> VisitReplace(BoundOperatorExpression &expr, unique_ptr<Expression> *expr_ptr) override;
-};
-
-} // namespace duckdb
-
-unique_ptr<LogicalOperator> Optimizer::Optimize(unique_ptr<LogicalOperator> plan) {
+	this->plan = std::move(plan_p);
 	// first we perform expression rewrites using the ExpressionRewriter
 	// this does not change the logical plan structure, but only simplifies the expression trees
-	context.profiler.StartPhase("expression_rewriter");
-	rewriter.Apply(*plan);
-	context.profiler.EndPhase();
+	RunOptimizer(OptimizerType::EXPRESSION_REWRITER, [&]() { rewriter.VisitOperator(*plan); });
+
+	// perform filter pullup
+	RunOptimizer(OptimizerType::FILTER_PULLUP, [&]() {
+		FilterPullup filter_pullup;
+		plan = filter_pullup.Rewrite(std::move(plan));
+	});
 
 	// perform filter pushdown
-	context.profiler.StartPhase("filter_pushdown");
-	FilterPushdown filter_pushdown(*this);
-	plan = filter_pushdown.Rewrite(move(plan));
-	context.profiler.EndPhase();
+	RunOptimizer(OptimizerType::FILTER_PUSHDOWN, [&]() {
+		FilterPushdown filter_pushdown(*this);
+		plan = filter_pushdown.Rewrite(std::move(plan));
+	});
 
-	// check if filters match with existing indexes, if true transforms filters to index scans
-	context.profiler.StartPhase("index_scan");
-	IndexScan index_scan;
-	plan = index_scan.Optimize(move(plan));
-	context.profiler.EndPhase();
+	RunOptimizer(OptimizerType::REGEX_RANGE, [&]() {
+		RegexRangeFilter regex_opt;
+		plan = regex_opt.Rewrite(std::move(plan));
+	});
 
-	context.profiler.StartPhase("regex_range");
-	RegexRangeFilter regex_opt;
-	plan = regex_opt.Rewrite(move(plan));
-	context.profiler.EndPhase();
+	RunOptimizer(OptimizerType::IN_CLAUSE, [&]() {
+		InClauseRewriter ic_rewriter(context, *this);
+		plan = ic_rewriter.Rewrite(std::move(plan));
+	});
+
+	// removes any redundant DelimGets/DelimJoins
+	RunOptimizer(OptimizerType::DELIMINATOR, [&]() {
+		Deliminator deliminator;
+		plan = deliminator.Optimize(std::move(plan));
+	});
 
 	// then we perform the join ordering optimization
 	// this also rewrites cross products + filters into joins and performs filter pushdowns
-	context.profiler.StartPhase("join_order");
-	JoinOrderOptimizer optimizer;
-	plan = optimizer.Optimize(move(plan));
-	context.profiler.EndPhase();
-	// next we make sure that multiple occurences of the same aggregation are only computed once
-	// context.profiler.StartPhase("common_aggregate_expressions");
-	// CommonAggregateOptimizer ca_optimizer;
-	// ca_optimizer.VisitOperator(*plan);
-	// context.profiler.EndPhase();
+	RunOptimizer(OptimizerType::JOIN_ORDER, [&]() {
+		JoinOrderOptimizer optimizer(context);
+		plan = optimizer.Optimize(std::move(plan));
+	});
+
+	// rewrites UNNESTs in DelimJoins by moving them to the projection
+	RunOptimizer(OptimizerType::UNNEST_REWRITER, [&]() {
+		UnnestRewriter unnest_rewriter;
+		plan = unnest_rewriter.Optimize(std::move(plan));
+	});
+
+	// removes unused columns
+	RunOptimizer(OptimizerType::UNUSED_COLUMNS, [&]() {
+		RemoveUnusedColumns unused(binder, context, true);
+		unused.VisitOperator(*plan);
+	});
+
+	// Remove duplicate groups from aggregates
+	RunOptimizer(OptimizerType::DUPLICATE_GROUPS, [&]() {
+		RemoveDuplicateGroups remove;
+		remove.VisitOperator(*plan);
+	});
 
 	// then we extract common subexpressions inside the different operators
-	// context.profiler.StartPhase("common_subexpressions");
-	// CommonSubExpressionOptimizer cse_optimizer;
-	// cse_optimizer.VisitOperator(*plan);
-	// context.profiler.EndPhase();
+	RunOptimizer(OptimizerType::COMMON_SUBEXPRESSIONS, [&]() {
+		CommonSubExpressionOptimizer cse_optimizer(binder);
+		cse_optimizer.VisitOperator(*plan);
+	});
 
-	context.profiler.StartPhase("in_clause");
-	InClauseRewriter rewriter(*this);
-	plan = rewriter.Rewrite(move(plan));
-	context.profiler.EndPhase();
-	return plan;
+	// creates projection maps so unused columns are projected out early
+	RunOptimizer(OptimizerType::COLUMN_LIFETIME, [&]() {
+		ColumnLifetimeAnalyzer column_lifetime(true);
+		column_lifetime.VisitOperator(*plan);
+	});
+
+	// perform statistics propagation
+	column_binding_map_t<unique_ptr<BaseStatistics>> statistics_map;
+	RunOptimizer(OptimizerType::STATISTICS_PROPAGATION, [&]() {
+		StatisticsPropagator propagator(*this);
+		propagator.PropagateStatistics(plan);
+		statistics_map = propagator.GetStatisticsMap();
+	});
+
+	// remove duplicate aggregates
+	RunOptimizer(OptimizerType::COMMON_AGGREGATE, [&]() {
+		CommonAggregateOptimizer common_aggregate;
+		common_aggregate.VisitOperator(*plan);
+	});
+
+	// creates projection maps so unused columns are projected out early
+	RunOptimizer(OptimizerType::COLUMN_LIFETIME, [&]() {
+		ColumnLifetimeAnalyzer column_lifetime(true);
+		column_lifetime.VisitOperator(*plan);
+	});
+
+	// compress data based on statistics for materializing operators
+	RunOptimizer(OptimizerType::COMPRESSED_MATERIALIZATION, [&]() {
+		CompressedMaterialization compressed_materialization(context, binder, std::move(statistics_map));
+		compressed_materialization.Compress(plan);
+	});
+
+	// transform ORDER BY + LIMIT to TopN
+	RunOptimizer(OptimizerType::TOP_N, [&]() {
+		TopN topn;
+		plan = topn.Optimize(std::move(plan));
+	});
+
+	// apply simple expression heuristics to get an initial reordering
+	RunOptimizer(OptimizerType::REORDER_FILTER, [&]() {
+		ExpressionHeuristics expression_heuristics(*this);
+		plan = expression_heuristics.Rewrite(std::move(plan));
+	});
+
+	for (auto &optimizer_extension : DBConfig::GetConfig(context).optimizer_extensions) {
+		RunOptimizer(OptimizerType::EXTENSION, [&]() {
+			optimizer_extension.optimize_function(context, optimizer_extension.optimizer_info.get(), plan);
+		});
+	}
+
+	Planner::VerifyPlan(context, plan);
+
+	return std::move(plan);
 }
 
-unique_ptr<Expression> InClauseRewriter::VisitReplace(BoundOperatorExpression &expr, unique_ptr<Expression> *expr_ptr) {
-	if (expr.type != ExpressionType::COMPARE_IN) {
-		return nullptr;
-	}
-	if (expr.children[0]->IsFoldable()) {
-		// LHS is scalar: we can flatten the entire list
-		return nullptr;
-	}
-	if (expr.children.size() < 6) {
-		// not enough children for flattening to be worth it
-		return nullptr;
-	}
-	assert(root);
-	auto in_type = expr.children[0]->return_type;
-	// IN clause with many children: try to generate a mark join that replaces this IN expression
-	// we can only do this if the expressions in the expression list are scalar
-	for (index_t i = 1; i < expr.children.size(); i++) {
-		assert(expr.children[i]->return_type == in_type);
-		if (!expr.children[i]->IsFoldable()) {
-			// non-scalar expression
-			return nullptr;
-		}
-	}
-	// IN clause with many constant children
-	// generate a mark join that replaces this IN expression
-	// first generate a ChunkCollection from the set of expressions
-	vector<TypeId> types = {in_type};
-	auto collection = make_unique<ChunkCollection>();
-	DataChunk chunk;
-	chunk.Initialize(types);
-	for (index_t i = 1; i < expr.children.size(); i++) {
-		// reoslve this expression to a constant
-		auto value = ExpressionExecutor::EvaluateScalar(*expr.children[i]);
-		index_t index = chunk.data[0].count++;
-		chunk.data[0].SetValue(index, value);
-		if (chunk.data[0].count == STANDARD_VECTOR_SIZE || i + 1 == expr.children.size()) {
-			// chunk full: append to chunk collection
-			collection->Append(chunk);
-			chunk.Reset();
-		}
-	}
-	// now generate a ChunkGet that scans this collection
-	auto chunk_index = optimizer.binder.GenerateTableIndex();
-	auto chunk_scan = make_unique<LogicalChunkGet>(chunk_index, types, move(collection));
-
-	auto subquery_index = optimizer.binder.GenerateTableIndex();
-	auto logical_subquery = make_unique<LogicalSubquery>(move(chunk_scan), subquery_index);
-
-	// then we generate the MARK join with the chunk scan on the RHS
-	auto join = make_unique<LogicalComparisonJoin>(JoinType::MARK);
-	join->AddChild(move(root));
-	join->AddChild(move(logical_subquery));
-	// create the JOIN condition
-	JoinCondition cond;
-	cond.left = move(expr.children[0]);
-
-	cond.right = make_unique<BoundColumnRefExpression>(in_type, ColumnBinding(subquery_index, 0));
-	cond.comparison = ExpressionType::COMPARE_EQUAL;
-	join->conditions.push_back(move(cond));
-	root = move(join);
-
-	// we replace the original subquery with a BoundColumnRefExpression refering to the mark column
-	return make_unique<BoundColumnRefExpression>("IN (...)", TypeId::BOOLEAN, ColumnBinding(subquery_index, 0));
-}
+} // namespace duckdb

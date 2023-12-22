@@ -1,28 +1,37 @@
+//===----------------------------------------------------------------------===//
+//                         DuckDB
+//
+// postgres_parser.hpp
+//
+//
+//===----------------------------------------------------------------------===//
+
 #pragma once
 
 #include <string>
+#include <vector>
+#include "nodes/pg_list.hpp"
+#include "pg_simplified_token.hpp"
+#include "duckdb/common/vector.hpp"
 
-extern "C" {
-typedef uint32_t Oid;
-typedef int16_t int16;
-#define PGDLLIMPORT
-#ifdef _MSC_VER
-#define __thread __declspec(thread)
-#endif
-#include "nodes/pg_list.h"
-}
-
-namespace postgres {
-
+namespace duckdb {
 class PostgresParser {
 public:
 	PostgresParser();
-	void Parse(std::string query);
 	~PostgresParser();
 
 	bool success;
-	List *parse_tree;
+	duckdb_libpgquery::PGList *parse_tree;
 	std::string error_message;
 	int error_location;
+public:
+	void Parse(const std::string &query);
+	static duckdb::vector<duckdb_libpgquery::PGSimplifiedToken> Tokenize(const std::string &query);
+
+	static bool IsKeyword(const std::string &text);
+	static duckdb::vector<duckdb_libpgquery::PGKeyword> KeywordList();
+
+	static void SetPreserveIdentifierCase(bool downcase);
 };
-} // namespace postgres
+
+}

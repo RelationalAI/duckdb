@@ -1,147 +1,262 @@
-#include "planner/table_binding.hpp"
+#include "duckdb/planner/table_binding.hpp"
 
-#include "catalog/catalog_entry/table_catalog_entry.hpp"
-#include "catalog/catalog_entry/table_function_catalog_entry.hpp"
-#include "parser/expression/columnref_expression.hpp"
-#include "parser/tableref/subqueryref.hpp"
-#include "planner/bind_context.hpp"
-#include "planner/bound_query_node.hpp"
-#include "planner/expression/bound_columnref_expression.hpp"
-#include "planner/tableref/bound_basetableref.hpp"
+#include "duckdb/common/string_util.hpp"
+#include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
+#include "duckdb/catalog/catalog_entry/table_function_catalog_entry.hpp"
+#include "duckdb/parser/expression/columnref_expression.hpp"
+#include "duckdb/parser/tableref/subqueryref.hpp"
+#include "duckdb/planner/bind_context.hpp"
+#include "duckdb/planner/bound_query_node.hpp"
+#include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/planner/expression/bound_lambdaref_expression.hpp"
+#include "duckdb/parser/parsed_expression_iterator.hpp"
 
-using namespace duckdb;
-using namespace std;
+#include <algorithm>
 
-TableBinding::TableBinding(const string &alias, BoundBaseTableRef *bound)
-    : Binding(BindingType::TABLE, alias, bound->bind_index), bound(bound) {
+namespace duckdb {
+
+Binding::Binding(BindingType binding_type, const string &alias, vector<LogicalType> coltypes, vector<string> colnames,
+                 idx_t index)
+    : binding_type(binding_type), alias(alias), index(index), types(std::move(coltypes)), names(std::move(colnames)) {
+	D_ASSERT(types.size() == names.size());
+	for (idx_t i = 0; i < names.size(); i++) {
+		auto &name = names[i];
+		D_ASSERT(!name.empty());
+		if (name_map.find(name) != name_map.end()) {
+			throw BinderException("table \"%s\" has duplicate column name \"%s\"", alias, name);
+		}
+		name_map[name] = i;
+	}
 }
 
-bool TableBinding::HasMatchingBinding(const string &column_name) {
-	return bound->table->ColumnExists(column_name);
+bool Binding::TryGetBindingIndex(const string &column_name, column_t &result) {
+	auto entry = name_map.find(column_name);
+	if (entry == name_map.end()) {
+		return false;
+	}
+	auto column_info = entry->second;
+	result = column_info;
+	return true;
 }
 
-BindResult TableBinding::Bind(ColumnRefExpression &colref, count_t depth) {
-	auto entry = bound->table->name_map.find(colref.column_name);
-	if (entry == bound->table->name_map.end()) {
-		return BindResult(StringUtil::Format("Table \"%s\" does not have a column named \"%s\"",
-		                                     colref.table_name.c_str(), colref.column_name.c_str()));
+column_t Binding::GetBindingIndex(const string &column_name) {
+	column_t result;
+	if (!TryGetBindingIndex(column_name, result)) {
+		throw InternalException("Binding index for column \"%s\" not found", column_name);
+	}
+	return result;
+}
+
+bool Binding::HasMatchingBinding(const string &column_name) {
+	column_t result;
+	return TryGetBindingIndex(column_name, result);
+}
+
+string Binding::ColumnNotFoundError(const string &column_name) const {
+	return StringUtil::Format("Values list \"%s\" does not have a column named \"%s\"", alias, column_name);
+}
+
+BindResult Binding::Bind(ColumnRefExpression &colref, idx_t depth) {
+	column_t column_index;
+	bool success = false;
+	success = TryGetBindingIndex(colref.GetColumnName(), column_index);
+	if (!success) {
+		return BindResult(ColumnNotFoundError(colref.GetColumnName()));
+	}
+	ColumnBinding binding;
+	binding.table_index = index;
+	binding.column_index = column_index;
+	LogicalType sql_type = types[column_index];
+	if (colref.alias.empty()) {
+		colref.alias = names[column_index];
+	}
+	return BindResult(make_uniq<BoundColumnRefExpression>(colref.GetName(), sql_type, binding, depth));
+}
+
+optional_ptr<StandardEntry> Binding::GetStandardEntry() {
+	return nullptr;
+}
+
+EntryBinding::EntryBinding(const string &alias, vector<LogicalType> types_p, vector<string> names_p, idx_t index,
+                           StandardEntry &entry)
+    : Binding(BindingType::CATALOG_ENTRY, alias, std::move(types_p), std::move(names_p), index), entry(entry) {
+}
+
+optional_ptr<StandardEntry> EntryBinding::GetStandardEntry() {
+	return &entry;
+}
+
+TableBinding::TableBinding(const string &alias, vector<LogicalType> types_p, vector<string> names_p,
+                           vector<column_t> &bound_column_ids, optional_ptr<StandardEntry> entry, idx_t index,
+                           bool add_row_id)
+    : Binding(BindingType::TABLE, alias, std::move(types_p), std::move(names_p), index),
+      bound_column_ids(bound_column_ids), entry(entry) {
+	if (add_row_id) {
+		if (name_map.find("rowid") == name_map.end()) {
+			name_map["rowid"] = COLUMN_IDENTIFIER_ROW_ID;
+		}
+	}
+}
+
+static void ReplaceAliases(ParsedExpression &expr, const ColumnList &list,
+                           const unordered_map<idx_t, string> &alias_map) {
+	if (expr.type == ExpressionType::COLUMN_REF) {
+		auto &colref = expr.Cast<ColumnRefExpression>();
+		D_ASSERT(!colref.IsQualified());
+		auto &col_names = colref.column_names;
+		D_ASSERT(col_names.size() == 1);
+		auto idx_entry = list.GetColumnIndex(col_names[0]);
+		auto &alias = alias_map.at(idx_entry.index);
+		col_names = {alias};
+	}
+	ParsedExpressionIterator::EnumerateChildren(
+	    expr, [&](const ParsedExpression &child) { ReplaceAliases((ParsedExpression &)child, list, alias_map); });
+}
+
+static void BakeTableName(ParsedExpression &expr, const string &table_name) {
+	if (expr.type == ExpressionType::COLUMN_REF) {
+		auto &colref = expr.Cast<ColumnRefExpression>();
+		D_ASSERT(!colref.IsQualified());
+		auto &col_names = colref.column_names;
+		col_names.insert(col_names.begin(), table_name);
+	}
+	ParsedExpressionIterator::EnumerateChildren(
+	    expr, [&](const ParsedExpression &child) { BakeTableName((ParsedExpression &)child, table_name); });
+}
+
+unique_ptr<ParsedExpression> TableBinding::ExpandGeneratedColumn(const string &column_name) {
+	auto catalog_entry = GetStandardEntry();
+	D_ASSERT(catalog_entry); // Should only be called on a TableBinding
+
+	D_ASSERT(catalog_entry->type == CatalogType::TABLE_ENTRY);
+	auto &table_entry = catalog_entry->Cast<TableCatalogEntry>();
+
+	// Get the index of the generated column
+	auto column_index = GetBindingIndex(column_name);
+	D_ASSERT(table_entry.GetColumn(LogicalIndex(column_index)).Generated());
+	// Get a copy of the generated column
+	auto expression = table_entry.GetColumn(LogicalIndex(column_index)).GeneratedExpression().Copy();
+	unordered_map<idx_t, string> alias_map;
+	for (auto &entry : name_map) {
+		alias_map[entry.second] = entry.first;
+	}
+	ReplaceAliases(*expression, table_entry.GetColumns(), alias_map);
+	BakeTableName(*expression, alias);
+	return (expression);
+}
+
+const vector<column_t> &TableBinding::GetBoundColumnIds() const {
+#ifdef DEBUG
+	unordered_set<column_t> column_ids;
+	for (auto &id : bound_column_ids) {
+		auto result = column_ids.insert(id);
+		// assert that all entries in the bound_column_ids are unique
+		D_ASSERT(result.second);
+		auto it = std::find_if(name_map.begin(), name_map.end(),
+		                       [&](const std::pair<const string, column_t> &it) { return it.second == id; });
+		// assert that every id appears in the name_map
+		D_ASSERT(it != name_map.end());
+		// the order that they appear in is not guaranteed to be sequential
+	}
+#endif
+	return bound_column_ids;
+}
+
+ColumnBinding TableBinding::GetColumnBinding(column_t column_index) {
+	auto &column_ids = bound_column_ids;
+	ColumnBinding binding;
+
+	// Locate the column_id that matches the 'column_index'
+	auto it = std::find_if(column_ids.begin(), column_ids.end(),
+	                       [&](const column_t &id) -> bool { return id == column_index; });
+	// Get the index of it
+	binding.column_index = std::distance(column_ids.begin(), it);
+	// If it wasn't found, add it
+	if (it == column_ids.end()) {
+		column_ids.push_back(column_index);
+	}
+
+	binding.table_index = index;
+	return binding;
+}
+
+BindResult TableBinding::Bind(ColumnRefExpression &colref, idx_t depth) {
+	auto &column_name = colref.GetColumnName();
+	column_t column_index;
+	bool success = false;
+	success = TryGetBindingIndex(column_name, column_index);
+	if (!success) {
+		return BindResult(ColumnNotFoundError(column_name));
+	}
+	auto entry = GetStandardEntry();
+	if (entry && column_index != COLUMN_IDENTIFIER_ROW_ID) {
+		D_ASSERT(entry->type == CatalogType::TABLE_ENTRY);
+		// Either there is no table, or the columns category has to be standard
+		auto &table_entry = entry->Cast<TableCatalogEntry>();
+		auto &column_entry = table_entry.GetColumn(LogicalIndex(column_index));
+		(void)table_entry;
+		(void)column_entry;
+		D_ASSERT(column_entry.Category() == TableColumnType::STANDARD);
 	}
 	// fetch the type of the column
-	SQLType col_type;
-	if (entry->second == COLUMN_IDENTIFIER_ROW_ID) {
+	LogicalType col_type;
+	if (column_index == COLUMN_IDENTIFIER_ROW_ID) {
 		// row id: BIGINT type
-		col_type = SQLType(SQLTypeId::BIGINT);
+		col_type = LogicalType::BIGINT;
 	} else {
 		// normal column: fetch type from base column
-		auto &col = bound->table->columns[entry->second];
-		col_type = col.type;
-	}
-	auto &column_list = bound->bound_columns;
-	// check if the entry already exists in the column list for the table
-	ColumnBinding binding;
-
-	binding.column_index = column_list.size();
-	for (index_t i = 0; i < column_list.size(); i++) {
-		auto &column = column_list[i];
-		if (column == colref.column_name) {
-			binding.column_index = i;
-			break;
+		col_type = types[column_index];
+		if (colref.alias.empty()) {
+			colref.alias = names[column_index];
 		}
 	}
-	if (binding.column_index == column_list.size()) {
-		// column binding not found: add it to the list of bindings
-		column_list.push_back(colref.column_name);
+	ColumnBinding binding = GetColumnBinding(column_index);
+	return BindResult(make_uniq<BoundColumnRefExpression>(colref.GetName(), col_type, binding, depth));
+}
+
+optional_ptr<StandardEntry> TableBinding::GetStandardEntry() {
+	return entry;
+}
+
+string TableBinding::ColumnNotFoundError(const string &column_name) const {
+	return StringUtil::Format("Table \"%s\" does not have a column named \"%s\"", alias, column_name);
+}
+
+DummyBinding::DummyBinding(vector<LogicalType> types, vector<string> names, string dummy_name)
+    : Binding(BindingType::DUMMY, DummyBinding::DUMMY_NAME + dummy_name, std::move(types), std::move(names),
+              DConstants::INVALID_INDEX),
+      dummy_name(std::move(dummy_name)) {
+}
+
+BindResult DummyBinding::Bind(ColumnRefExpression &colref, idx_t depth) {
+	column_t column_index;
+	if (!TryGetBindingIndex(colref.GetColumnName(), column_index)) {
+		throw InternalException("Column %s not found in bindings", colref.GetColumnName());
 	}
-	binding.table_index = index;
-	return BindResult(
-	    make_unique<BoundColumnRefExpression>(colref.GetName(), GetInternalType(col_type), binding, depth), col_type);
+	ColumnBinding binding(index, column_index);
+
+	// we are binding a parameter to create the dummy binding, no arguments are supplied
+	return BindResult(make_uniq<BoundColumnRefExpression>(colref.GetName(), types[column_index], binding, depth));
 }
 
-void TableBinding::GenerateAllColumnExpressions(BindContext &context,
-                                                vector<unique_ptr<ParsedExpression>> &select_list) {
-	for (auto &column : bound->table->columns) {
-		string column_string = alias + "." + column.name;
-		if (context.hidden_columns.find(column_string) != context.hidden_columns.end()) {
-			continue;
-		}
-		select_list.push_back(make_unique<ColumnRefExpression>(column.name, alias));
+BindResult DummyBinding::Bind(LambdaRefExpression &lambdaref, idx_t depth) {
+	column_t column_index;
+	if (!TryGetBindingIndex(lambdaref.GetName(), column_index)) {
+		throw InternalException("Column %s not found in bindings", lambdaref.GetName());
 	}
+	ColumnBinding binding(index, column_index);
+	return BindResult(make_uniq<BoundLambdaRefExpression>(lambdaref.GetName(), types[column_index], binding,
+	                                                      lambdaref.lambda_idx, depth));
 }
 
-SubqueryBinding::SubqueryBinding(const string &alias, SubqueryRef &ref, BoundQueryNode &subquery, index_t index)
-    : Binding(BindingType::SUBQUERY, alias, index), subquery(subquery) {
-	if (ref.column_name_alias.size() > subquery.names.size()) {
-		throw BinderException("table \"%s\" has %lld columns available but %lld columns specified", alias.c_str(),
-		                      (int64_t)subquery.names.size(), (int64_t)ref.column_name_alias.size());
+unique_ptr<ParsedExpression> DummyBinding::ParamToArg(ColumnRefExpression &colref) {
+	column_t column_index;
+	if (!TryGetBindingIndex(colref.GetColumnName(), column_index)) {
+		throw InternalException("Column %s not found in macro", colref.GetColumnName());
 	}
-	index_t i;
-	// use any provided aliases from the subquery
-	for (i = 0; i < ref.column_name_alias.size(); i++) {
-		auto &name = ref.column_name_alias[i];
-		name_map[name] = names.size();
-		names.push_back(name);
-	}
-	// if not enough aliases were provided, use the default names
-	for (; i < subquery.names.size(); i++) {
-		auto &name = subquery.names[i];
-		name_map[name] = names.size();
-		names.push_back(name);
-	}
+	auto arg = (*arguments)[column_index]->Copy();
+	arg->alias = colref.alias;
+	return arg;
 }
 
-bool SubqueryBinding::HasMatchingBinding(const string &column_name) {
-	auto entry = name_map.find(column_name);
-	return entry != name_map.end();
-}
-
-BindResult SubqueryBinding::Bind(ColumnRefExpression &colref, count_t depth) {
-	auto column_entry = name_map.find(colref.column_name);
-	if (column_entry == name_map.end()) {
-		return BindResult(StringUtil::Format("Subquery \"%s\" does not have a column named \"%s\"", alias.c_str(),
-		                                     colref.column_name.c_str()));
-	}
-	ColumnBinding binding;
-
-	binding.table_index = index;
-	binding.column_index = column_entry->second;
-	assert(column_entry->second < subquery.types.size());
-	SQLType sql_type = subquery.types[column_entry->second];
-	return BindResult(
-	    make_unique<BoundColumnRefExpression>(colref.GetName(), GetInternalType(sql_type), binding, depth), sql_type);
-}
-
-void SubqueryBinding::GenerateAllColumnExpressions(BindContext &context,
-                                                   vector<unique_ptr<ParsedExpression>> &select_list) {
-	for (auto &column_name : names) {
-		select_list.push_back(make_unique<ColumnRefExpression>(column_name, alias));
-	}
-}
-
-TableFunctionBinding::TableFunctionBinding(const string &alias, TableFunctionCatalogEntry *function, index_t index)
-    : Binding(BindingType::TABLE_FUNCTION, alias, index), function(function) {
-}
-
-bool TableFunctionBinding::HasMatchingBinding(const string &column_name) {
-	return function->ColumnExists(column_name);
-}
-
-BindResult TableFunctionBinding::Bind(ColumnRefExpression &colref, count_t depth) {
-	auto column_entry = function->name_map.find(colref.column_name);
-	if (column_entry == function->name_map.end()) {
-		return BindResult(StringUtil::Format("Table Function \"%s\" does not have a column named \"%s\"", alias.c_str(),
-		                                     colref.column_name.c_str()));
-	}
-	ColumnBinding binding;
-	binding.table_index = index;
-	binding.column_index = column_entry->second;
-	SQLType sql_type = function->return_values[column_entry->second].type;
-	return BindResult(
-	    make_unique<BoundColumnRefExpression>(colref.GetName(), GetInternalType(sql_type), binding, depth), sql_type);
-}
-
-void TableFunctionBinding::GenerateAllColumnExpressions(BindContext &context,
-                                                        vector<unique_ptr<ParsedExpression>> &select_list) {
-	for (auto &column : function->return_values) {
-		select_list.push_back(make_unique<ColumnRefExpression>(column.name, alias));
-	}
-}
+} // namespace duckdb

@@ -1,816 +1,824 @@
-#include "parser/transformer.hpp"
+#include "duckdb/parser/transformer.hpp"
 
-using namespace duckdb;
-using namespace postgres;
+namespace duckdb {
 
-std::string Transformer::NodetypeToString(postgres::NodeTag type) {
+std::string Transformer::NodetypeToString(duckdb_libpgquery::PGNodeTag type) { // LCOV_EXCL_START
 	switch (type) {
-	case T_Invalid:
+	case duckdb_libpgquery::T_PGInvalid:
 		return "T_Invalid";
-	case T_IndexInfo:
+	case duckdb_libpgquery::T_PGIndexInfo:
 		return "T_IndexInfo";
-	case T_ExprContext:
+	case duckdb_libpgquery::T_PGExprContext:
 		return "T_ExprContext";
-	case T_ProjectionInfo:
+	case duckdb_libpgquery::T_PGProjectionInfo:
 		return "T_ProjectionInfo";
-	case T_JunkFilter:
+	case duckdb_libpgquery::T_PGJunkFilter:
 		return "T_JunkFilter";
-	case T_ResultRelInfo:
+	case duckdb_libpgquery::T_PGResultRelInfo:
 		return "T_ResultRelInfo";
-	case T_EState:
+	case duckdb_libpgquery::T_PGEState:
 		return "T_EState";
-	case T_TupleTableSlot:
+	case duckdb_libpgquery::T_PGTupleTableSlot:
 		return "T_TupleTableSlot";
-	case T_Plan:
+	case duckdb_libpgquery::T_PGPlan:
 		return "T_Plan";
-	case T_Result:
+	case duckdb_libpgquery::T_PGResult:
 		return "T_Result";
-	case T_ProjectSet:
+	case duckdb_libpgquery::T_PGProjectSet:
 		return "T_ProjectSet";
-	case T_ModifyTable:
+	case duckdb_libpgquery::T_PGModifyTable:
 		return "T_ModifyTable";
-	case T_Append:
+	case duckdb_libpgquery::T_PGAppend:
 		return "T_Append";
-	case T_MergeAppend:
+	case duckdb_libpgquery::T_PGMergeAppend:
 		return "T_MergeAppend";
-	case T_RecursiveUnion:
+	case duckdb_libpgquery::T_PGRecursiveUnion:
 		return "T_RecursiveUnion";
-	case T_BitmapAnd:
+	case duckdb_libpgquery::T_PGBitmapAnd:
 		return "T_BitmapAnd";
-	case T_BitmapOr:
+	case duckdb_libpgquery::T_PGBitmapOr:
 		return "T_BitmapOr";
-	case T_Scan:
+	case duckdb_libpgquery::T_PGScan:
 		return "T_Scan";
-	case T_SeqScan:
+	case duckdb_libpgquery::T_PGSeqScan:
 		return "T_SeqScan";
-	case T_SampleScan:
+	case duckdb_libpgquery::T_PGSampleScan:
 		return "T_SampleScan";
-	case T_IndexScan:
+	case duckdb_libpgquery::T_PGIndexScan:
 		return "T_IndexScan";
-	case T_IndexOnlyScan:
+	case duckdb_libpgquery::T_PGIndexOnlyScan:
 		return "T_IndexOnlyScan";
-	case T_BitmapIndexScan:
+	case duckdb_libpgquery::T_PGBitmapIndexScan:
 		return "T_BitmapIndexScan";
-	case T_BitmapHeapScan:
+	case duckdb_libpgquery::T_PGBitmapHeapScan:
 		return "T_BitmapHeapScan";
-	case T_TidScan:
+	case duckdb_libpgquery::T_PGTidScan:
 		return "T_TidScan";
-	case T_SubqueryScan:
+	case duckdb_libpgquery::T_PGSubqueryScan:
 		return "T_SubqueryScan";
-	case T_FunctionScan:
+	case duckdb_libpgquery::T_PGFunctionScan:
 		return "T_FunctionScan";
-	case T_ValuesScan:
+	case duckdb_libpgquery::T_PGValuesScan:
 		return "T_ValuesScan";
-	case T_TableFuncScan:
+	case duckdb_libpgquery::T_PGTableFuncScan:
 		return "T_TableFuncScan";
-	case T_CteScan:
+	case duckdb_libpgquery::T_PGCteScan:
 		return "T_CteScan";
-	case T_NamedTuplestoreScan:
+	case duckdb_libpgquery::T_PGNamedTuplestoreScan:
 		return "T_NamedTuplestoreScan";
-	case T_WorkTableScan:
+	case duckdb_libpgquery::T_PGWorkTableScan:
 		return "T_WorkTableScan";
-	case T_ForeignScan:
+	case duckdb_libpgquery::T_PGForeignScan:
 		return "T_ForeignScan";
-	case T_CustomScan:
+	case duckdb_libpgquery::T_PGCustomScan:
 		return "T_CustomScan";
-	case T_Join:
+	case duckdb_libpgquery::T_PGJoin:
 		return "T_Join";
-	case T_NestLoop:
+	case duckdb_libpgquery::T_PGNestLoop:
 		return "T_NestLoop";
-	case T_MergeJoin:
+	case duckdb_libpgquery::T_PGMergeJoin:
 		return "T_MergeJoin";
-	case T_HashJoin:
+	case duckdb_libpgquery::T_PGHashJoin:
 		return "T_HashJoin";
-	case T_Material:
+	case duckdb_libpgquery::T_PGMaterial:
 		return "T_Material";
-	case T_Sort:
+	case duckdb_libpgquery::T_PGSort:
 		return "T_Sort";
-	case T_Group:
+	case duckdb_libpgquery::T_PGGroup:
 		return "T_Group";
-	case T_Agg:
+	case duckdb_libpgquery::T_PGAgg:
 		return "T_Agg";
-	case T_WindowAgg:
+	case duckdb_libpgquery::T_PGWindowAgg:
 		return "T_WindowAgg";
-	case T_Unique:
+	case duckdb_libpgquery::T_PGUnique:
 		return "T_Unique";
-	case T_Gather:
+	case duckdb_libpgquery::T_PGGather:
 		return "T_Gather";
-	case T_GatherMerge:
+	case duckdb_libpgquery::T_PGGatherMerge:
 		return "T_GatherMerge";
-	case T_Hash:
+	case duckdb_libpgquery::T_PGHash:
 		return "T_Hash";
-	case T_SetOp:
+	case duckdb_libpgquery::T_PGSetOp:
 		return "T_SetOp";
-	case T_LockRows:
+	case duckdb_libpgquery::T_PGLockRows:
 		return "T_LockRows";
-	case T_Limit:
+	case duckdb_libpgquery::T_PGLimit:
 		return "T_Limit";
-	case T_NestLoopParam:
+	case duckdb_libpgquery::T_PGNestLoopParam:
 		return "T_NestLoopParam";
-	case T_PlanRowMark:
+	case duckdb_libpgquery::T_PGPlanRowMark:
 		return "T_PlanRowMark";
-	case T_PlanInvalItem:
+	case duckdb_libpgquery::T_PGPlanInvalItem:
 		return "T_PlanInvalItem";
-	case T_PlanState:
+	case duckdb_libpgquery::T_PGPlanState:
 		return "T_PlanState";
-	case T_ResultState:
+	case duckdb_libpgquery::T_PGResultState:
 		return "T_ResultState";
-	case T_ProjectSetState:
+	case duckdb_libpgquery::T_PGProjectSetState:
 		return "T_ProjectSetState";
-	case T_ModifyTableState:
+	case duckdb_libpgquery::T_PGModifyTableState:
 		return "T_ModifyTableState";
-	case T_AppendState:
+	case duckdb_libpgquery::T_PGAppendState:
 		return "T_AppendState";
-	case T_MergeAppendState:
+	case duckdb_libpgquery::T_PGMergeAppendState:
 		return "T_MergeAppendState";
-	case T_RecursiveUnionState:
+	case duckdb_libpgquery::T_PGRecursiveUnionState:
 		return "T_RecursiveUnionState";
-	case T_BitmapAndState:
+	case duckdb_libpgquery::T_PGBitmapAndState:
 		return "T_BitmapAndState";
-	case T_BitmapOrState:
+	case duckdb_libpgquery::T_PGBitmapOrState:
 		return "T_BitmapOrState";
-	case T_ScanState:
+	case duckdb_libpgquery::T_PGScanState:
 		return "T_ScanState";
-	case T_SeqScanState:
+	case duckdb_libpgquery::T_PGSeqScanState:
 		return "T_SeqScanState";
-	case T_SampleScanState:
+	case duckdb_libpgquery::T_PGSampleScanState:
 		return "T_SampleScanState";
-	case T_IndexScanState:
+	case duckdb_libpgquery::T_PGIndexScanState:
 		return "T_IndexScanState";
-	case T_IndexOnlyScanState:
+	case duckdb_libpgquery::T_PGIndexOnlyScanState:
 		return "T_IndexOnlyScanState";
-	case T_BitmapIndexScanState:
+	case duckdb_libpgquery::T_PGBitmapIndexScanState:
 		return "T_BitmapIndexScanState";
-	case T_BitmapHeapScanState:
+	case duckdb_libpgquery::T_PGBitmapHeapScanState:
 		return "T_BitmapHeapScanState";
-	case T_TidScanState:
+	case duckdb_libpgquery::T_PGTidScanState:
 		return "T_TidScanState";
-	case T_SubqueryScanState:
+	case duckdb_libpgquery::T_PGSubqueryScanState:
 		return "T_SubqueryScanState";
-	case T_FunctionScanState:
+	case duckdb_libpgquery::T_PGFunctionScanState:
 		return "T_FunctionScanState";
-	case T_TableFuncScanState:
+	case duckdb_libpgquery::T_PGTableFuncScanState:
 		return "T_TableFuncScanState";
-	case T_ValuesScanState:
+	case duckdb_libpgquery::T_PGValuesScanState:
 		return "T_ValuesScanState";
-	case T_CteScanState:
+	case duckdb_libpgquery::T_PGCteScanState:
 		return "T_CteScanState";
-	case T_NamedTuplestoreScanState:
+	case duckdb_libpgquery::T_PGNamedTuplestoreScanState:
 		return "T_NamedTuplestoreScanState";
-	case T_WorkTableScanState:
+	case duckdb_libpgquery::T_PGWorkTableScanState:
 		return "T_WorkTableScanState";
-	case T_ForeignScanState:
+	case duckdb_libpgquery::T_PGForeignScanState:
 		return "T_ForeignScanState";
-	case T_CustomScanState:
+	case duckdb_libpgquery::T_PGCustomScanState:
 		return "T_CustomScanState";
-	case T_JoinState:
+	case duckdb_libpgquery::T_PGJoinState:
 		return "T_JoinState";
-	case T_NestLoopState:
+	case duckdb_libpgquery::T_PGNestLoopState:
 		return "T_NestLoopState";
-	case T_MergeJoinState:
+	case duckdb_libpgquery::T_PGMergeJoinState:
 		return "T_MergeJoinState";
-	case T_HashJoinState:
+	case duckdb_libpgquery::T_PGHashJoinState:
 		return "T_HashJoinState";
-	case T_MaterialState:
+	case duckdb_libpgquery::T_PGMaterialState:
 		return "T_MaterialState";
-	case T_SortState:
+	case duckdb_libpgquery::T_PGSortState:
 		return "T_SortState";
-	case T_GroupState:
+	case duckdb_libpgquery::T_PGGroupState:
 		return "T_GroupState";
-	case T_AggState:
+	case duckdb_libpgquery::T_PGAggState:
 		return "T_AggState";
-	case T_WindowAggState:
+	case duckdb_libpgquery::T_PGWindowAggState:
 		return "T_WindowAggState";
-	case T_UniqueState:
+	case duckdb_libpgquery::T_PGUniqueState:
 		return "T_UniqueState";
-	case T_GatherState:
+	case duckdb_libpgquery::T_PGGatherState:
 		return "T_GatherState";
-	case T_GatherMergeState:
+	case duckdb_libpgquery::T_PGGatherMergeState:
 		return "T_GatherMergeState";
-	case T_HashState:
+	case duckdb_libpgquery::T_PGHashState:
 		return "T_HashState";
-	case T_SetOpState:
+	case duckdb_libpgquery::T_PGSetOpState:
 		return "T_SetOpState";
-	case T_LockRowsState:
+	case duckdb_libpgquery::T_PGLockRowsState:
 		return "T_LockRowsState";
-	case T_LimitState:
+	case duckdb_libpgquery::T_PGLimitState:
 		return "T_LimitState";
-	case T_Alias:
+	case duckdb_libpgquery::T_PGAlias:
 		return "T_Alias";
-	case T_RangeVar:
+	case duckdb_libpgquery::T_PGRangeVar:
 		return "T_RangeVar";
-	case T_TableFunc:
+	case duckdb_libpgquery::T_PGTableFunc:
 		return "T_TableFunc";
-	case T_Expr:
+	case duckdb_libpgquery::T_PGExpr:
 		return "T_Expr";
-	case T_Var:
+	case duckdb_libpgquery::T_PGVar:
 		return "T_Var";
-	case T_Const:
+	case duckdb_libpgquery::T_PGConst:
 		return "T_Const";
-	case T_Param:
+	case duckdb_libpgquery::T_PGParam:
 		return "T_Param";
-	case T_Aggref:
+	case duckdb_libpgquery::T_PGAggref:
 		return "T_Aggref";
-	case T_GroupingFunc:
+	case duckdb_libpgquery::T_PGGroupingFunc:
 		return "T_GroupingFunc";
-	case T_WindowFunc:
+	case duckdb_libpgquery::T_PGWindowFunc:
 		return "T_WindowFunc";
-	case T_ArrayRef:
+	case duckdb_libpgquery::T_PGArrayRef:
 		return "T_ArrayRef";
-	case T_FuncExpr:
+	case duckdb_libpgquery::T_PGFuncExpr:
 		return "T_FuncExpr";
-	case T_NamedArgExpr:
+	case duckdb_libpgquery::T_PGNamedArgExpr:
 		return "T_NamedArgExpr";
-	case T_OpExpr:
+	case duckdb_libpgquery::T_PGOpExpr:
 		return "T_OpExpr";
-	case T_DistinctExpr:
+	case duckdb_libpgquery::T_PGDistinctExpr:
 		return "T_DistinctExpr";
-	case T_NullIfExpr:
+	case duckdb_libpgquery::T_PGNullIfExpr:
 		return "T_NullIfExpr";
-	case T_ScalarArrayOpExpr:
+	case duckdb_libpgquery::T_PGScalarArrayOpExpr:
 		return "T_ScalarArrayOpExpr";
-	case T_BoolExpr:
+	case duckdb_libpgquery::T_PGBoolExpr:
 		return "T_BoolExpr";
-	case T_SubLink:
+	case duckdb_libpgquery::T_PGSubLink:
 		return "T_SubLink";
-	case T_SubPlan:
+	case duckdb_libpgquery::T_PGSubPlan:
 		return "T_SubPlan";
-	case T_AlternativeSubPlan:
+	case duckdb_libpgquery::T_PGAlternativeSubPlan:
 		return "T_AlternativeSubPlan";
-	case T_FieldSelect:
+	case duckdb_libpgquery::T_PGFieldSelect:
 		return "T_FieldSelect";
-	case T_FieldStore:
+	case duckdb_libpgquery::T_PGFieldStore:
 		return "T_FieldStore";
-	case T_RelabelType:
+	case duckdb_libpgquery::T_PGRelabelType:
 		return "T_RelabelType";
-	case T_CoerceViaIO:
+	case duckdb_libpgquery::T_PGCoerceViaIO:
 		return "T_CoerceViaIO";
-	case T_ArrayCoerceExpr:
+	case duckdb_libpgquery::T_PGArrayCoerceExpr:
 		return "T_ArrayCoerceExpr";
-	case T_ConvertRowtypeExpr:
+	case duckdb_libpgquery::T_PGConvertRowtypeExpr:
 		return "T_ConvertRowtypeExpr";
-	case T_CollateExpr:
+	case duckdb_libpgquery::T_PGCollateExpr:
 		return "T_CollateExpr";
-	case T_CaseExpr:
+	case duckdb_libpgquery::T_PGCaseExpr:
 		return "T_CaseExpr";
-	case T_CaseWhen:
+	case duckdb_libpgquery::T_PGCaseWhen:
 		return "T_CaseWhen";
-	case T_CaseTestExpr:
+	case duckdb_libpgquery::T_PGCaseTestExpr:
 		return "T_CaseTestExpr";
-	case T_ArrayExpr:
+	case duckdb_libpgquery::T_PGArrayExpr:
 		return "T_ArrayExpr";
-	case T_RowExpr:
+	case duckdb_libpgquery::T_PGRowExpr:
 		return "T_RowExpr";
-	case T_RowCompareExpr:
+	case duckdb_libpgquery::T_PGRowCompareExpr:
 		return "T_RowCompareExpr";
-	case T_CoalesceExpr:
+	case duckdb_libpgquery::T_PGCoalesceExpr:
 		return "T_CoalesceExpr";
-	case T_MinMaxExpr:
+	case duckdb_libpgquery::T_PGMinMaxExpr:
 		return "T_MinMaxExpr";
-	case T_SQLValueFunction:
+	case duckdb_libpgquery::T_PGSQLValueFunction:
 		return "T_SQLValueFunction";
-	case T_XmlExpr:
+	case duckdb_libpgquery::T_PGXmlExpr:
 		return "T_XmlExpr";
-	case T_NullTest:
+	case duckdb_libpgquery::T_PGNullTest:
 		return "T_NullTest";
-	case T_BooleanTest:
+	case duckdb_libpgquery::T_PGBooleanTest:
 		return "T_BooleanTest";
-	case T_CoerceToDomain:
+	case duckdb_libpgquery::T_PGCoerceToDomain:
 		return "T_CoerceToDomain";
-	case T_CoerceToDomainValue:
+	case duckdb_libpgquery::T_PGCoerceToDomainValue:
 		return "T_CoerceToDomainValue";
-	case T_SetToDefault:
+	case duckdb_libpgquery::T_PGSetToDefault:
 		return "T_SetToDefault";
-	case T_CurrentOfExpr:
+	case duckdb_libpgquery::T_PGCurrentOfExpr:
 		return "T_CurrentOfExpr";
-	case T_NextValueExpr:
+	case duckdb_libpgquery::T_PGNextValueExpr:
 		return "T_NextValueExpr";
-	case T_InferenceElem:
+	case duckdb_libpgquery::T_PGInferenceElem:
 		return "T_InferenceElem";
-	case T_TargetEntry:
+	case duckdb_libpgquery::T_PGTargetEntry:
 		return "T_TargetEntry";
-	case T_RangeTblRef:
+	case duckdb_libpgquery::T_PGRangeTblRef:
 		return "T_RangeTblRef";
-	case T_JoinExpr:
+	case duckdb_libpgquery::T_PGJoinExpr:
 		return "T_JoinExpr";
-	case T_FromExpr:
+	case duckdb_libpgquery::T_PGFromExpr:
 		return "T_FromExpr";
-	case T_OnConflictExpr:
+	case duckdb_libpgquery::T_PGOnConflictExpr:
 		return "T_OnConflictExpr";
-	case T_IntoClause:
+	case duckdb_libpgquery::T_PGIntoClause:
 		return "T_IntoClause";
-	case T_ExprState:
+	case duckdb_libpgquery::T_PGExprState:
 		return "T_ExprState";
-	case T_AggrefExprState:
+	case duckdb_libpgquery::T_PGAggrefExprState:
 		return "T_AggrefExprState";
-	case T_WindowFuncExprState:
+	case duckdb_libpgquery::T_PGWindowFuncExprState:
 		return "T_WindowFuncExprState";
-	case T_SetExprState:
+	case duckdb_libpgquery::T_PGSetExprState:
 		return "T_SetExprState";
-	case T_SubPlanState:
+	case duckdb_libpgquery::T_PGSubPlanState:
 		return "T_SubPlanState";
-	case T_AlternativeSubPlanState:
+	case duckdb_libpgquery::T_PGAlternativeSubPlanState:
 		return "T_AlternativeSubPlanState";
-	case T_DomainConstraintState:
+	case duckdb_libpgquery::T_PGDomainConstraintState:
 		return "T_DomainConstraintState";
-	case T_PlannerInfo:
+	case duckdb_libpgquery::T_PGPlannerInfo:
 		return "T_PlannerInfo";
-	case T_PlannerGlobal:
+	case duckdb_libpgquery::T_PGPlannerGlobal:
 		return "T_PlannerGlobal";
-	case T_RelOptInfo:
+	case duckdb_libpgquery::T_PGRelOptInfo:
 		return "T_RelOptInfo";
-	case T_IndexOptInfo:
+	case duckdb_libpgquery::T_PGIndexOptInfo:
 		return "T_IndexOptInfo";
-	case T_ForeignKeyOptInfo:
+	case duckdb_libpgquery::T_PGForeignKeyOptInfo:
 		return "T_ForeignKeyOptInfo";
-	case T_ParamPathInfo:
+	case duckdb_libpgquery::T_PGParamPathInfo:
 		return "T_ParamPathInfo";
-	case T_Path:
+	case duckdb_libpgquery::T_PGPath:
 		return "T_Path";
-	case T_IndexPath:
+	case duckdb_libpgquery::T_PGIndexPath:
 		return "T_IndexPath";
-	case T_BitmapHeapPath:
+	case duckdb_libpgquery::T_PGBitmapHeapPath:
 		return "T_BitmapHeapPath";
-	case T_BitmapAndPath:
+	case duckdb_libpgquery::T_PGBitmapAndPath:
 		return "T_BitmapAndPath";
-	case T_BitmapOrPath:
+	case duckdb_libpgquery::T_PGBitmapOrPath:
 		return "T_BitmapOrPath";
-	case T_TidPath:
+	case duckdb_libpgquery::T_PGTidPath:
 		return "T_TidPath";
-	case T_SubqueryScanPath:
+	case duckdb_libpgquery::T_PGSubqueryScanPath:
 		return "T_SubqueryScanPath";
-	case T_ForeignPath:
+	case duckdb_libpgquery::T_PGForeignPath:
 		return "T_ForeignPath";
-	case T_CustomPath:
+	case duckdb_libpgquery::T_PGCustomPath:
 		return "T_CustomPath";
-	case T_NestPath:
+	case duckdb_libpgquery::T_PGNestPath:
 		return "T_NestPath";
-	case T_MergePath:
+	case duckdb_libpgquery::T_PGMergePath:
 		return "T_MergePath";
-	case T_HashPath:
+	case duckdb_libpgquery::T_PGHashPath:
 		return "T_HashPath";
-	case T_AppendPath:
+	case duckdb_libpgquery::T_PGAppendPath:
 		return "T_AppendPath";
-	case T_MergeAppendPath:
+	case duckdb_libpgquery::T_PGMergeAppendPath:
 		return "T_MergeAppendPath";
-	case T_ResultPath:
+	case duckdb_libpgquery::T_PGResultPath:
 		return "T_ResultPath";
-	case T_MaterialPath:
+	case duckdb_libpgquery::T_PGMaterialPath:
 		return "T_MaterialPath";
-	case T_UniquePath:
+	case duckdb_libpgquery::T_PGUniquePath:
 		return "T_UniquePath";
-	case T_GatherPath:
+	case duckdb_libpgquery::T_PGGatherPath:
 		return "T_GatherPath";
-	case T_GatherMergePath:
+	case duckdb_libpgquery::T_PGGatherMergePath:
 		return "T_GatherMergePath";
-	case T_ProjectionPath:
+	case duckdb_libpgquery::T_PGProjectionPath:
 		return "T_ProjectionPath";
-	case T_ProjectSetPath:
+	case duckdb_libpgquery::T_PGProjectSetPath:
 		return "T_ProjectSetPath";
-	case T_SortPath:
+	case duckdb_libpgquery::T_PGSortPath:
 		return "T_SortPath";
-	case T_GroupPath:
+	case duckdb_libpgquery::T_PGGroupPath:
 		return "T_GroupPath";
-	case T_UpperUniquePath:
+	case duckdb_libpgquery::T_PGUpperUniquePath:
 		return "T_UpperUniquePath";
-	case T_AggPath:
+	case duckdb_libpgquery::T_PGAggPath:
 		return "T_AggPath";
-	case T_GroupingSetsPath:
+	case duckdb_libpgquery::T_PGGroupingSetsPath:
 		return "T_GroupingSetsPath";
-	case T_MinMaxAggPath:
+	case duckdb_libpgquery::T_PGMinMaxAggPath:
 		return "T_MinMaxAggPath";
-	case T_WindowAggPath:
+	case duckdb_libpgquery::T_PGWindowAggPath:
 		return "T_WindowAggPath";
-	case T_SetOpPath:
+	case duckdb_libpgquery::T_PGSetOpPath:
 		return "T_SetOpPath";
-	case T_RecursiveUnionPath:
+	case duckdb_libpgquery::T_PGRecursiveUnionPath:
 		return "T_RecursiveUnionPath";
-	case T_LockRowsPath:
+	case duckdb_libpgquery::T_PGLockRowsPath:
 		return "T_LockRowsPath";
-	case T_ModifyTablePath:
+	case duckdb_libpgquery::T_PGModifyTablePath:
 		return "T_ModifyTablePath";
-	case T_LimitPath:
+	case duckdb_libpgquery::T_PGLimitPath:
 		return "T_LimitPath";
-	case T_EquivalenceClass:
+	case duckdb_libpgquery::T_PGEquivalenceClass:
 		return "T_EquivalenceClass";
-	case T_EquivalenceMember:
+	case duckdb_libpgquery::T_PGEquivalenceMember:
 		return "T_EquivalenceMember";
-	case T_PathKey:
+	case duckdb_libpgquery::T_PGPathKey:
 		return "T_PathKey";
-	case T_PathTarget:
+	case duckdb_libpgquery::T_PGPathTarget:
 		return "T_PathTarget";
-	case T_RestrictInfo:
+	case duckdb_libpgquery::T_PGRestrictInfo:
 		return "T_RestrictInfo";
-	case T_PlaceHolderVar:
+	case duckdb_libpgquery::T_PGPlaceHolderVar:
 		return "T_PlaceHolderVar";
-	case T_SpecialJoinInfo:
+	case duckdb_libpgquery::T_PGSpecialJoinInfo:
 		return "T_SpecialJoinInfo";
-	case T_AppendRelInfo:
+	case duckdb_libpgquery::T_PGAppendRelInfo:
 		return "T_AppendRelInfo";
-	case T_PartitionedChildRelInfo:
+	case duckdb_libpgquery::T_PGPartitionedChildRelInfo:
 		return "T_PartitionedChildRelInfo";
-	case T_PlaceHolderInfo:
+	case duckdb_libpgquery::T_PGPlaceHolderInfo:
 		return "T_PlaceHolderInfo";
-	case T_MinMaxAggInfo:
+	case duckdb_libpgquery::T_PGMinMaxAggInfo:
 		return "T_MinMaxAggInfo";
-	case T_PlannerParamItem:
+	case duckdb_libpgquery::T_PGPlannerParamItem:
 		return "T_PlannerParamItem";
-	case T_RollupData:
+	case duckdb_libpgquery::T_PGRollupData:
 		return "T_RollupData";
-	case T_GroupingSetData:
+	case duckdb_libpgquery::T_PGGroupingSetData:
 		return "T_GroupingSetData";
-	case T_StatisticExtInfo:
+	case duckdb_libpgquery::T_PGStatisticExtInfo:
 		return "T_StatisticExtInfo";
-	case T_MemoryContext:
+	case duckdb_libpgquery::T_PGMemoryContext:
 		return "T_MemoryContext";
-	case T_AllocSetContext:
+	case duckdb_libpgquery::T_PGAllocSetContext:
 		return "T_AllocSetContext";
-	case T_SlabContext:
+	case duckdb_libpgquery::T_PGSlabContext:
 		return "T_SlabContext";
-	case T_Value:
+	case duckdb_libpgquery::T_PGValue:
 		return "T_Value";
-	case T_Integer:
+	case duckdb_libpgquery::T_PGInteger:
 		return "T_Integer";
-	case T_Float:
+	case duckdb_libpgquery::T_PGFloat:
 		return "T_Float";
-	case T_String:
+	case duckdb_libpgquery::T_PGString:
 		return "T_String";
-	case T_BitString:
+	case duckdb_libpgquery::T_PGBitString:
 		return "T_BitString";
-	case T_Null:
+	case duckdb_libpgquery::T_PGNull:
 		return "T_Null";
-	case T_List:
+	case duckdb_libpgquery::T_PGList:
 		return "T_List";
-	case T_IntList:
+	case duckdb_libpgquery::T_PGIntList:
 		return "T_IntList";
-	case T_OidList:
+	case duckdb_libpgquery::T_PGOidList:
 		return "T_OidList";
-	case T_ExtensibleNode:
+	case duckdb_libpgquery::T_PGExtensibleNode:
 		return "T_ExtensibleNode";
-	case T_RawStmt:
+	case duckdb_libpgquery::T_PGRawStmt:
 		return "T_RawStmt";
-	case T_Query:
+	case duckdb_libpgquery::T_PGQuery:
 		return "T_Query";
-	case T_PlannedStmt:
+	case duckdb_libpgquery::T_PGPlannedStmt:
 		return "T_PlannedStmt";
-	case T_InsertStmt:
+	case duckdb_libpgquery::T_PGInsertStmt:
 		return "T_InsertStmt";
-	case T_DeleteStmt:
+	case duckdb_libpgquery::T_PGDeleteStmt:
 		return "T_DeleteStmt";
-	case T_UpdateStmt:
+	case duckdb_libpgquery::T_PGUpdateStmt:
 		return "T_UpdateStmt";
-	case T_SelectStmt:
+	case duckdb_libpgquery::T_PGSelectStmt:
 		return "T_SelectStmt";
-	case T_AlterTableStmt:
+	case duckdb_libpgquery::T_PGAlterTableStmt:
 		return "T_AlterTableStmt";
-	case T_AlterTableCmd:
+	case duckdb_libpgquery::T_PGAlterTableCmd:
 		return "T_AlterTableCmd";
-	case T_AlterDomainStmt:
+	case duckdb_libpgquery::T_PGAlterDomainStmt:
 		return "T_AlterDomainStmt";
-	case T_SetOperationStmt:
+	case duckdb_libpgquery::T_PGSetOperationStmt:
 		return "T_SetOperationStmt";
-	case T_GrantStmt:
+	case duckdb_libpgquery::T_PGGrantStmt:
 		return "T_GrantStmt";
-	case T_GrantRoleStmt:
+	case duckdb_libpgquery::T_PGGrantRoleStmt:
 		return "T_GrantRoleStmt";
-	case T_AlterDefaultPrivilegesStmt:
+	case duckdb_libpgquery::T_PGAlterDefaultPrivilegesStmt:
 		return "T_AlterDefaultPrivilegesStmt";
-	case T_ClosePortalStmt:
+	case duckdb_libpgquery::T_PGClosePortalStmt:
 		return "T_ClosePortalStmt";
-	case T_ClusterStmt:
+	case duckdb_libpgquery::T_PGClusterStmt:
 		return "T_ClusterStmt";
-	case T_CopyStmt:
+	case duckdb_libpgquery::T_PGCopyStmt:
 		return "T_CopyStmt";
-	case T_CreateStmt:
+	case duckdb_libpgquery::T_PGCreateStmt:
 		return "T_CreateStmt";
-	case T_DefineStmt:
+	case duckdb_libpgquery::T_PGDefineStmt:
 		return "T_DefineStmt";
-	case T_DropStmt:
+	case duckdb_libpgquery::T_PGDropStmt:
 		return "T_DropStmt";
-	case T_TruncateStmt:
+	case duckdb_libpgquery::T_PGTruncateStmt:
 		return "T_TruncateStmt";
-	case T_CommentStmt:
+	case duckdb_libpgquery::T_PGCommentStmt:
 		return "T_CommentStmt";
-	case T_FetchStmt:
+	case duckdb_libpgquery::T_PGFetchStmt:
 		return "T_FetchStmt";
-	case T_IndexStmt:
+	case duckdb_libpgquery::T_PGIndexStmt:
 		return "T_IndexStmt";
-	case T_CreateFunctionStmt:
+	case duckdb_libpgquery::T_PGCreateFunctionStmt:
 		return "T_CreateFunctionStmt";
-	case T_AlterFunctionStmt:
+	case duckdb_libpgquery::T_PGAlterFunctionStmt:
 		return "T_AlterFunctionStmt";
-	case T_DoStmt:
+	case duckdb_libpgquery::T_PGDoStmt:
 		return "T_DoStmt";
-	case T_RenameStmt:
+	case duckdb_libpgquery::T_PGRenameStmt:
 		return "T_RenameStmt";
-	case T_RuleStmt:
+	case duckdb_libpgquery::T_PGRuleStmt:
 		return "T_RuleStmt";
-	case T_NotifyStmt:
+	case duckdb_libpgquery::T_PGNotifyStmt:
 		return "T_NotifyStmt";
-	case T_ListenStmt:
+	case duckdb_libpgquery::T_PGListenStmt:
 		return "T_ListenStmt";
-	case T_UnlistenStmt:
+	case duckdb_libpgquery::T_PGUnlistenStmt:
 		return "T_UnlistenStmt";
-	case T_TransactionStmt:
+	case duckdb_libpgquery::T_PGTransactionStmt:
 		return "T_TransactionStmt";
-	case T_ViewStmt:
+	case duckdb_libpgquery::T_PGViewStmt:
 		return "T_ViewStmt";
-	case T_LoadStmt:
+	case duckdb_libpgquery::T_PGLoadStmt:
 		return "T_LoadStmt";
-	case T_CreateDomainStmt:
+	case duckdb_libpgquery::T_PGCreateDomainStmt:
 		return "T_CreateDomainStmt";
-	case T_CreatedbStmt:
+	case duckdb_libpgquery::T_PGCreatedbStmt:
 		return "T_CreatedbStmt";
-	case T_DropdbStmt:
+	case duckdb_libpgquery::T_PGDropdbStmt:
 		return "T_DropdbStmt";
-	case T_VacuumStmt:
+	case duckdb_libpgquery::T_PGVacuumStmt:
 		return "T_VacuumStmt";
-	case T_ExplainStmt:
+	case duckdb_libpgquery::T_PGExplainStmt:
 		return "T_ExplainStmt";
-	case T_CreateTableAsStmt:
+	case duckdb_libpgquery::T_PGCreateTableAsStmt:
 		return "T_CreateTableAsStmt";
-	case T_CreateSeqStmt:
+	case duckdb_libpgquery::T_PGCreateSeqStmt:
 		return "T_CreateSeqStmt";
-	case T_AlterSeqStmt:
+	case duckdb_libpgquery::T_PGAlterSeqStmt:
 		return "T_AlterSeqStmt";
-	case T_VariableSetStmt:
+	case duckdb_libpgquery::T_PGVariableSetStmt:
 		return "T_VariableSetStmt";
-	case T_VariableShowStmt:
+	case duckdb_libpgquery::T_PGVariableShowStmt:
 		return "T_VariableShowStmt";
-	case T_DiscardStmt:
+	case duckdb_libpgquery::T_PGVariableShowSelectStmt:
+		return "T_VariableShowSelectStmt";
+	case duckdb_libpgquery::T_PGDiscardStmt:
 		return "T_DiscardStmt";
-	case T_CreateTrigStmt:
+	case duckdb_libpgquery::T_PGCreateTrigStmt:
 		return "T_CreateTrigStmt";
-	case T_CreatePLangStmt:
+	case duckdb_libpgquery::T_PGCreatePLangStmt:
 		return "T_CreatePLangStmt";
-	case T_CreateRoleStmt:
+	case duckdb_libpgquery::T_PGCreateRoleStmt:
 		return "T_CreateRoleStmt";
-	case T_AlterRoleStmt:
+	case duckdb_libpgquery::T_PGAlterRoleStmt:
 		return "T_AlterRoleStmt";
-	case T_DropRoleStmt:
+	case duckdb_libpgquery::T_PGDropRoleStmt:
 		return "T_DropRoleStmt";
-	case T_LockStmt:
+	case duckdb_libpgquery::T_PGLockStmt:
 		return "T_LockStmt";
-	case T_ConstraintsSetStmt:
+	case duckdb_libpgquery::T_PGConstraintsSetStmt:
 		return "T_ConstraintsSetStmt";
-	case T_ReindexStmt:
+	case duckdb_libpgquery::T_PGReindexStmt:
 		return "T_ReindexStmt";
-	case T_CheckPointStmt:
+	case duckdb_libpgquery::T_PGCheckPointStmt:
 		return "T_CheckPointStmt";
-	case T_CreateSchemaStmt:
+	case duckdb_libpgquery::T_PGCreateSchemaStmt:
 		return "T_CreateSchemaStmt";
-	case T_AlterDatabaseStmt:
+	case duckdb_libpgquery::T_PGAlterDatabaseStmt:
 		return "T_AlterDatabaseStmt";
-	case T_AlterDatabaseSetStmt:
+	case duckdb_libpgquery::T_PGAlterDatabaseSetStmt:
 		return "T_AlterDatabaseSetStmt";
-	case T_AlterRoleSetStmt:
+	case duckdb_libpgquery::T_PGAlterRoleSetStmt:
 		return "T_AlterRoleSetStmt";
-	case T_CreateConversionStmt:
+	case duckdb_libpgquery::T_PGCreateConversionStmt:
 		return "T_CreateConversionStmt";
-	case T_CreateCastStmt:
+	case duckdb_libpgquery::T_PGCreateCastStmt:
 		return "T_CreateCastStmt";
-	case T_CreateOpClassStmt:
+	case duckdb_libpgquery::T_PGCreateOpClassStmt:
 		return "T_CreateOpClassStmt";
-	case T_CreateOpFamilyStmt:
+	case duckdb_libpgquery::T_PGCreateOpFamilyStmt:
 		return "T_CreateOpFamilyStmt";
-	case T_AlterOpFamilyStmt:
+	case duckdb_libpgquery::T_PGAlterOpFamilyStmt:
 		return "T_AlterOpFamilyStmt";
-	case T_PrepareStmt:
+	case duckdb_libpgquery::T_PGPrepareStmt:
 		return "T_PrepareStmt";
-	case T_ExecuteStmt:
+	case duckdb_libpgquery::T_PGExecuteStmt:
 		return "T_ExecuteStmt";
-	case T_DeallocateStmt:
+	case duckdb_libpgquery::T_PGCallStmt:
+		return "T_CallStmt";
+	case duckdb_libpgquery::T_PGDeallocateStmt:
 		return "T_DeallocateStmt";
-	case T_DeclareCursorStmt:
+	case duckdb_libpgquery::T_PGDeclareCursorStmt:
 		return "T_DeclareCursorStmt";
-	case T_CreateTableSpaceStmt:
+	case duckdb_libpgquery::T_PGCreateTableSpaceStmt:
 		return "T_CreateTableSpaceStmt";
-	case T_DropTableSpaceStmt:
+	case duckdb_libpgquery::T_PGDropTableSpaceStmt:
 		return "T_DropTableSpaceStmt";
-	case T_AlterObjectDependsStmt:
+	case duckdb_libpgquery::T_PGAlterObjectDependsStmt:
 		return "T_AlterObjectDependsStmt";
-	case T_AlterObjectSchemaStmt:
+	case duckdb_libpgquery::T_PGAlterObjectSchemaStmt:
 		return "T_AlterObjectSchemaStmt";
-	case T_AlterOwnerStmt:
+	case duckdb_libpgquery::T_PGAlterOwnerStmt:
 		return "T_AlterOwnerStmt";
-	case T_AlterOperatorStmt:
+	case duckdb_libpgquery::T_PGAlterOperatorStmt:
 		return "T_AlterOperatorStmt";
-	case T_DropOwnedStmt:
+	case duckdb_libpgquery::T_PGDropOwnedStmt:
 		return "T_DropOwnedStmt";
-	case T_ReassignOwnedStmt:
+	case duckdb_libpgquery::T_PGReassignOwnedStmt:
 		return "T_ReassignOwnedStmt";
-	case T_CompositeTypeStmt:
+	case duckdb_libpgquery::T_PGCompositeTypeStmt:
 		return "T_CompositeTypeStmt";
-	case T_CreateEnumStmt:
-		return "T_CreateEnumStmt";
-	case T_CreateRangeStmt:
+	case duckdb_libpgquery::T_PGCreateTypeStmt:
+		return "T_CreateTypeStmt";
+	case duckdb_libpgquery::T_PGCreateRangeStmt:
 		return "T_CreateRangeStmt";
-	case T_AlterEnumStmt:
+	case duckdb_libpgquery::T_PGAlterEnumStmt:
 		return "T_AlterEnumStmt";
-	case T_AlterTSDictionaryStmt:
+	case duckdb_libpgquery::T_PGAlterTSDictionaryStmt:
 		return "T_AlterTSDictionaryStmt";
-	case T_AlterTSConfigurationStmt:
+	case duckdb_libpgquery::T_PGAlterTSConfigurationStmt:
 		return "T_AlterTSConfigurationStmt";
-	case T_CreateFdwStmt:
+	case duckdb_libpgquery::T_PGCreateFdwStmt:
 		return "T_CreateFdwStmt";
-	case T_AlterFdwStmt:
+	case duckdb_libpgquery::T_PGAlterFdwStmt:
 		return "T_AlterFdwStmt";
-	case T_CreateForeignServerStmt:
+	case duckdb_libpgquery::T_PGCreateForeignServerStmt:
 		return "T_CreateForeignServerStmt";
-	case T_AlterForeignServerStmt:
+	case duckdb_libpgquery::T_PGAlterForeignServerStmt:
 		return "T_AlterForeignServerStmt";
-	case T_CreateUserMappingStmt:
+	case duckdb_libpgquery::T_PGCreateUserMappingStmt:
 		return "T_CreateUserMappingStmt";
-	case T_AlterUserMappingStmt:
+	case duckdb_libpgquery::T_PGAlterUserMappingStmt:
 		return "T_AlterUserMappingStmt";
-	case T_DropUserMappingStmt:
+	case duckdb_libpgquery::T_PGDropUserMappingStmt:
 		return "T_DropUserMappingStmt";
-	case T_AlterTableSpaceOptionsStmt:
+	case duckdb_libpgquery::T_PGAlterTableSpaceOptionsStmt:
 		return "T_AlterTableSpaceOptionsStmt";
-	case T_AlterTableMoveAllStmt:
+	case duckdb_libpgquery::T_PGAlterTableMoveAllStmt:
 		return "T_AlterTableMoveAllStmt";
-	case T_SecLabelStmt:
+	case duckdb_libpgquery::T_PGSecLabelStmt:
 		return "T_SecLabelStmt";
-	case T_CreateForeignTableStmt:
+	case duckdb_libpgquery::T_PGCreateForeignTableStmt:
 		return "T_CreateForeignTableStmt";
-	case T_ImportForeignSchemaStmt:
+	case duckdb_libpgquery::T_PGImportForeignSchemaStmt:
 		return "T_ImportForeignSchemaStmt";
-	case T_CreateExtensionStmt:
+	case duckdb_libpgquery::T_PGCreateExtensionStmt:
 		return "T_CreateExtensionStmt";
-	case T_AlterExtensionStmt:
+	case duckdb_libpgquery::T_PGAlterExtensionStmt:
 		return "T_AlterExtensionStmt";
-	case T_AlterExtensionContentsStmt:
+	case duckdb_libpgquery::T_PGAlterExtensionContentsStmt:
 		return "T_AlterExtensionContentsStmt";
-	case T_CreateEventTrigStmt:
+	case duckdb_libpgquery::T_PGCreateEventTrigStmt:
 		return "T_CreateEventTrigStmt";
-	case T_AlterEventTrigStmt:
+	case duckdb_libpgquery::T_PGAlterEventTrigStmt:
 		return "T_AlterEventTrigStmt";
-	case T_RefreshMatViewStmt:
+	case duckdb_libpgquery::T_PGRefreshMatViewStmt:
 		return "T_RefreshMatViewStmt";
-	case T_ReplicaIdentityStmt:
+	case duckdb_libpgquery::T_PGReplicaIdentityStmt:
 		return "T_ReplicaIdentityStmt";
-	case T_AlterSystemStmt:
+	case duckdb_libpgquery::T_PGAlterSystemStmt:
 		return "T_AlterSystemStmt";
-	case T_CreatePolicyStmt:
+	case duckdb_libpgquery::T_PGCreatePolicyStmt:
 		return "T_CreatePolicyStmt";
-	case T_AlterPolicyStmt:
+	case duckdb_libpgquery::T_PGAlterPolicyStmt:
 		return "T_AlterPolicyStmt";
-	case T_CreateTransformStmt:
+	case duckdb_libpgquery::T_PGCreateTransformStmt:
 		return "T_CreateTransformStmt";
-	case T_CreateAmStmt:
+	case duckdb_libpgquery::T_PGCreateAmStmt:
 		return "T_CreateAmStmt";
-	case T_CreatePublicationStmt:
+	case duckdb_libpgquery::T_PGCreatePublicationStmt:
 		return "T_CreatePublicationStmt";
-	case T_AlterPublicationStmt:
+	case duckdb_libpgquery::T_PGAlterPublicationStmt:
 		return "T_AlterPublicationStmt";
-	case T_CreateSubscriptionStmt:
+	case duckdb_libpgquery::T_PGCreateSubscriptionStmt:
 		return "T_CreateSubscriptionStmt";
-	case T_AlterSubscriptionStmt:
+	case duckdb_libpgquery::T_PGAlterSubscriptionStmt:
 		return "T_AlterSubscriptionStmt";
-	case T_DropSubscriptionStmt:
+	case duckdb_libpgquery::T_PGDropSubscriptionStmt:
 		return "T_DropSubscriptionStmt";
-	case T_CreateStatsStmt:
+	case duckdb_libpgquery::T_PGCreateStatsStmt:
 		return "T_CreateStatsStmt";
-	case T_AlterCollationStmt:
+	case duckdb_libpgquery::T_PGAlterCollationStmt:
 		return "T_AlterCollationStmt";
-	case T_A_Expr:
-		return "T_A_Expr";
-	case T_ColumnRef:
+	case duckdb_libpgquery::T_PGAExpr:
+		return "TAExpr";
+	case duckdb_libpgquery::T_PGColumnRef:
 		return "T_ColumnRef";
-	case T_ParamRef:
+	case duckdb_libpgquery::T_PGParamRef:
 		return "T_ParamRef";
-	case T_A_Const:
-		return "T_A_Const";
-	case T_FuncCall:
+	case duckdb_libpgquery::T_PGAConst:
+		return "TAConst";
+	case duckdb_libpgquery::T_PGFuncCall:
 		return "T_FuncCall";
-	case T_A_Star:
-		return "T_A_Star";
-	case T_A_Indices:
-		return "T_A_Indices";
-	case T_A_Indirection:
-		return "T_A_Indirection";
-	case T_A_ArrayExpr:
-		return "T_A_ArrayExpr";
-	case T_ResTarget:
+	case duckdb_libpgquery::T_PGAStar:
+		return "TAStar";
+	case duckdb_libpgquery::T_PGAIndices:
+		return "TAIndices";
+	case duckdb_libpgquery::T_PGAIndirection:
+		return "TAIndirection";
+	case duckdb_libpgquery::T_PGAArrayExpr:
+		return "TAArrayExpr";
+	case duckdb_libpgquery::T_PGResTarget:
 		return "T_ResTarget";
-	case T_MultiAssignRef:
+	case duckdb_libpgquery::T_PGMultiAssignRef:
 		return "T_MultiAssignRef";
-	case T_TypeCast:
+	case duckdb_libpgquery::T_PGTypeCast:
 		return "T_TypeCast";
-	case T_CollateClause:
+	case duckdb_libpgquery::T_PGCollateClause:
 		return "T_CollateClause";
-	case T_SortBy:
+	case duckdb_libpgquery::T_PGSortBy:
 		return "T_SortBy";
-	case T_WindowDef:
+	case duckdb_libpgquery::T_PGWindowDef:
 		return "T_WindowDef";
-	case T_RangeSubselect:
+	case duckdb_libpgquery::T_PGRangeSubselect:
 		return "T_RangeSubselect";
-	case T_RangeFunction:
+	case duckdb_libpgquery::T_PGRangeFunction:
 		return "T_RangeFunction";
-	case T_RangeTableSample:
+	case duckdb_libpgquery::T_PGRangeTableSample:
 		return "T_RangeTableSample";
-	case T_RangeTableFunc:
+	case duckdb_libpgquery::T_PGRangeTableFunc:
 		return "T_RangeTableFunc";
-	case T_RangeTableFuncCol:
+	case duckdb_libpgquery::T_PGRangeTableFuncCol:
 		return "T_RangeTableFuncCol";
-	case T_TypeName:
+	case duckdb_libpgquery::T_PGTypeName:
 		return "T_TypeName";
-	case T_ColumnDef:
+	case duckdb_libpgquery::T_PGColumnDef:
 		return "T_ColumnDef";
-	case T_IndexElem:
+	case duckdb_libpgquery::T_PGIndexElem:
 		return "T_IndexElem";
-	case T_Constraint:
+	case duckdb_libpgquery::T_PGConstraint:
 		return "T_Constraint";
-	case T_DefElem:
+	case duckdb_libpgquery::T_PGDefElem:
 		return "T_DefElem";
-	case T_RangeTblEntry:
+	case duckdb_libpgquery::T_PGRangeTblEntry:
 		return "T_RangeTblEntry";
-	case T_RangeTblFunction:
+	case duckdb_libpgquery::T_PGRangeTblFunction:
 		return "T_RangeTblFunction";
-	case T_TableSampleClause:
+	case duckdb_libpgquery::T_PGTableSampleClause:
 		return "T_TableSampleClause";
-	case T_WithCheckOption:
+	case duckdb_libpgquery::T_PGWithCheckOption:
 		return "T_WithCheckOption";
-	case T_SortGroupClause:
+	case duckdb_libpgquery::T_PGSortGroupClause:
 		return "T_SortGroupClause";
-	case T_GroupingSet:
+	case duckdb_libpgquery::T_PGGroupingSet:
 		return "T_GroupingSet";
-	case T_WindowClause:
+	case duckdb_libpgquery::T_PGWindowClause:
 		return "T_WindowClause";
-	case T_ObjectWithArgs:
+	case duckdb_libpgquery::T_PGObjectWithArgs:
 		return "T_ObjectWithArgs";
-	case T_AccessPriv:
+	case duckdb_libpgquery::T_PGAccessPriv:
 		return "T_AccessPriv";
-	case T_CreateOpClassItem:
+	case duckdb_libpgquery::T_PGCreateOpClassItem:
 		return "T_CreateOpClassItem";
-	case T_TableLikeClause:
+	case duckdb_libpgquery::T_PGTableLikeClause:
 		return "T_TableLikeClause";
-	case T_FunctionParameter:
+	case duckdb_libpgquery::T_PGFunctionParameter:
 		return "T_FunctionParameter";
-	case T_LockingClause:
+	case duckdb_libpgquery::T_PGLockingClause:
 		return "T_LockingClause";
-	case T_RowMarkClause:
+	case duckdb_libpgquery::T_PGRowMarkClause:
 		return "T_RowMarkClause";
-	case T_XmlSerialize:
+	case duckdb_libpgquery::T_PGXmlSerialize:
 		return "T_XmlSerialize";
-	case T_WithClause:
+	case duckdb_libpgquery::T_PGWithClause:
 		return "T_WithClause";
-	case T_InferClause:
+	case duckdb_libpgquery::T_PGInferClause:
 		return "T_InferClause";
-	case T_OnConflictClause:
+	case duckdb_libpgquery::T_PGOnConflictClause:
 		return "T_OnConflictClause";
-	case T_CommonTableExpr:
+	case duckdb_libpgquery::T_PGCommonTableExpr:
 		return "T_CommonTableExpr";
-	case T_RoleSpec:
+	case duckdb_libpgquery::T_PGRoleSpec:
 		return "T_RoleSpec";
-	case T_TriggerTransition:
+	case duckdb_libpgquery::T_PGTriggerTransition:
 		return "T_TriggerTransition";
-	case T_PartitionElem:
+	case duckdb_libpgquery::T_PGPartitionElem:
 		return "T_PartitionElem";
-	case T_PartitionSpec:
+	case duckdb_libpgquery::T_PGPartitionSpec:
 		return "T_PartitionSpec";
-	case T_PartitionBoundSpec:
+	case duckdb_libpgquery::T_PGPartitionBoundSpec:
 		return "T_PartitionBoundSpec";
-	case T_PartitionRangeDatum:
+	case duckdb_libpgquery::T_PGPartitionRangeDatum:
 		return "T_PartitionRangeDatum";
-	case T_PartitionCmd:
+	case duckdb_libpgquery::T_PGPartitionCmd:
 		return "T_PartitionCmd";
-	case T_IdentifySystemCmd:
+	case duckdb_libpgquery::T_PGIdentifySystemCmd:
 		return "T_IdentifySystemCmd";
-	case T_BaseBackupCmd:
+	case duckdb_libpgquery::T_PGBaseBackupCmd:
 		return "T_BaseBackupCmd";
-	case T_CreateReplicationSlotCmd:
+	case duckdb_libpgquery::T_PGCreateReplicationSlotCmd:
 		return "T_CreateReplicationSlotCmd";
-	case T_DropReplicationSlotCmd:
+	case duckdb_libpgquery::T_PGDropReplicationSlotCmd:
 		return "T_DropReplicationSlotCmd";
-	case T_StartReplicationCmd:
+	case duckdb_libpgquery::T_PGStartReplicationCmd:
 		return "T_StartReplicationCmd";
-	case T_TimeLineHistoryCmd:
+	case duckdb_libpgquery::T_PGTimeLineHistoryCmd:
 		return "T_TimeLineHistoryCmd";
-	case T_SQLCmd:
+	case duckdb_libpgquery::T_PGSQLCmd:
 		return "T_SQLCmd";
-	case T_TriggerData:
+	case duckdb_libpgquery::T_PGTriggerData:
 		return "T_TriggerData";
-	case T_EventTriggerData:
+	case duckdb_libpgquery::T_PGEventTriggerData:
 		return "T_EventTriggerData";
-	case T_ReturnSetInfo:
+	case duckdb_libpgquery::T_PGReturnSetInfo:
 		return "T_ReturnSetInfo";
-	case T_WindowObjectData:
+	case duckdb_libpgquery::T_PGWindowObjectData:
 		return "T_WindowObjectData";
-	case T_TIDBitmap:
+	case duckdb_libpgquery::T_PGTIDBitmap:
 		return "T_TIDBitmap";
-	case T_InlineCodeBlock:
+	case duckdb_libpgquery::T_PGInlineCodeBlock:
 		return "T_InlineCodeBlock";
-	case T_FdwRoutine:
+	case duckdb_libpgquery::T_PGFdwRoutine:
 		return "T_FdwRoutine";
-	case T_IndexAmRoutine:
+	case duckdb_libpgquery::T_PGIndexAmRoutine:
 		return "T_IndexAmRoutine";
-	case T_TsmRoutine:
+	case duckdb_libpgquery::T_PGTsmRoutine:
 		return "T_TsmRoutine";
-	case T_ForeignKeyCacheInfo:
+	case duckdb_libpgquery::T_PGForeignKeyCacheInfo:
 		return "T_ForeignKeyCacheInfo";
+	case duckdb_libpgquery::T_PGAttachStmt:
+		return "T_PGAttachStmt";
+	case duckdb_libpgquery::T_PGUseStmt:
+		return "T_PGUseStmt";
 	default:
-		assert(0);
-		return "";
+		return "(UNKNOWN)";
 	}
-}
+} // LCOV_EXCL_STOP
+
+} // namespace duckdb

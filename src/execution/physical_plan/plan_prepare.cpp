@@ -1,35 +1,21 @@
-#include "execution/operator/scan/physical_dummy_scan.hpp"
-#include "execution/physical_plan_generator.hpp"
-#include "main/client_context.hpp"
-#include "main/database.hpp"
-#include "planner/operator/logical_prepare.hpp"
+#include "duckdb/execution/operator/scan/physical_dummy_scan.hpp"
+#include "duckdb/execution/physical_plan_generator.hpp"
+#include "duckdb/planner/operator/logical_prepare.hpp"
+#include "duckdb/execution/operator/helper/physical_prepare.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
 unique_ptr<PhysicalOperator> PhysicalPlanGenerator::CreatePlan(LogicalPrepare &op) {
-	assert(op.children.size() == 1);
-
-	// create the physical plan for the prepare statement.
-	auto entry = make_unique<PreparedStatementCatalogEntry>(op.name, op.statement_type);
-	entry->catalog = &context.catalog;
-	entry->names = op.names;
-	entry->value_map = move(op.value_map);
-
-	// find tables
-	op.GetTableBindings(entry->tables);
+	D_ASSERT(op.children.size() <= 1);
 
 	// generate physical plan
-	auto plan = CreatePlan(*op.children[0]);
-
-	entry->types = plan->types;
-	entry->sql_types = op.sql_types;
-	entry->plan = move(plan);
-
-	// now store plan in context
-	if (!context.prepared_statements->CreateEntry(context.ActiveTransaction(), op.name, move(entry), dependencies)) {
-		throw Exception("Failed to prepare statement");
+	if (!op.children.empty()) {
+		auto plan = CreatePlan(*op.children[0]);
+		op.prepared->types = plan->types;
+		op.prepared->plan = std::move(plan);
 	}
-	vector<TypeId> prep_return_types = {TypeId::BOOLEAN};
-	return make_unique<PhysicalDummyScan>(prep_return_types);
+
+	return make_uniq<PhysicalPrepare>(op.name, std::move(op.prepared), op.estimated_cardinality);
 }
+
+} // namespace duckdb

@@ -1,35 +1,45 @@
-#include "planner/expression/bound_reference_expression.hpp"
+#include "duckdb/planner/expression/bound_reference_expression.hpp"
 
-#include "common/serializer.hpp"
-#include "common/types/hash.hpp"
+#include "duckdb/common/to_string.hpp"
+#include "duckdb/common/types/hash.hpp"
+#include "duckdb/main/config.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-BoundReferenceExpression::BoundReferenceExpression(string alias, TypeId type, index_t index)
-    : Expression(ExpressionType::BOUND_REF, ExpressionClass::BOUND_REF, type), index(index) {
-	this->alias = alias;
+BoundReferenceExpression::BoundReferenceExpression(string alias, LogicalType type, idx_t index)
+    : Expression(ExpressionType::BOUND_REF, ExpressionClass::BOUND_REF, std::move(type)), index(index) {
+	this->alias = std::move(alias);
 }
-BoundReferenceExpression::BoundReferenceExpression(TypeId type, index_t index)
-    : BoundReferenceExpression(string(), type, index) {
+BoundReferenceExpression::BoundReferenceExpression(LogicalType type, idx_t index)
+    : BoundReferenceExpression(string(), std::move(type), index) {
 }
 
 string BoundReferenceExpression::ToString() const {
-	return "#" + std::to_string(index);
+#ifdef DEBUG
+	if (DBConfigOptions::debug_print_bindings) {
+		return "#" + to_string(index);
+	}
+#endif
+	if (!alias.empty()) {
+		return alias;
+	}
+	return "#" + to_string(index);
 }
 
-bool BoundReferenceExpression::Equals(const BaseExpression *other_) const {
-	if (!BaseExpression::Equals(other_)) {
+bool BoundReferenceExpression::Equals(const BaseExpression &other_p) const {
+	if (!Expression::Equals(other_p)) {
 		return false;
 	}
-	auto other = (BoundReferenceExpression *)other_;
-	return other->index == index;
+	auto &other = other_p.Cast<BoundReferenceExpression>();
+	return other.index == index;
 }
 
-uint64_t BoundReferenceExpression::Hash() const {
-	return CombineHash(Expression::Hash(), duckdb::Hash<index_t>(index));
+hash_t BoundReferenceExpression::Hash() const {
+	return CombineHash(Expression::Hash(), duckdb::Hash<idx_t>(index));
 }
 
 unique_ptr<Expression> BoundReferenceExpression::Copy() {
-	return make_unique<BoundReferenceExpression>(alias, return_type, index);
+	return make_uniq<BoundReferenceExpression>(alias, return_type, index);
 }
+
+} // namespace duckdb

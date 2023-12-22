@@ -1,56 +1,56 @@
-#include "parser/expression/star_expression.hpp"
-#include "parser/statement/create_view_statement.hpp"
-#include "parser/tableref/subqueryref.hpp"
-#include "parser/transformer.hpp"
+#include "duckdb/parser/statement/create_statement.hpp"
+#include "duckdb/parser/transformer.hpp"
+#include "duckdb/parser/parsed_data/create_view_info.hpp"
 
-using namespace duckdb;
-using namespace postgres;
-using namespace std;
+namespace duckdb {
 
-unique_ptr<CreateViewStatement> Transformer::TransformCreateView(Node *node) {
-	assert(node);
-	assert(node->type == T_ViewStmt);
+unique_ptr<CreateStatement> Transformer::TransformCreateView(duckdb_libpgquery::PGViewStmt &stmt) {
+	D_ASSERT(stmt.type == duckdb_libpgquery::T_PGViewStmt);
+	D_ASSERT(stmt.view);
 
-	auto stmt = reinterpret_cast<ViewStmt *>(node);
-	assert(stmt);
-	assert(stmt->view);
+	auto result = make_uniq<CreateStatement>();
+	auto info = make_uniq<CreateViewInfo>();
 
-	auto result = make_unique<CreateViewStatement>();
-	auto &info = *result->info.get();
-
-	if (stmt->view->schemaname) {
-		info.schema = stmt->view->schemaname;
+	auto qname = TransformQualifiedName(*stmt.view);
+	info->catalog = qname.catalog;
+	info->schema = qname.schema;
+	info->view_name = qname.name;
+	info->temporary = !stmt.view->relpersistence;
+	if (info->temporary && IsInvalidCatalog(info->catalog)) {
+		info->catalog = TEMP_CATALOG;
 	}
-	info.view_name = stmt->view->relname;
-	info.replace = stmt->replace;
+	info->on_conflict = TransformOnConflict(stmt.onconflict);
 
-	info.query = TransformSelectNode((SelectStmt *)stmt->query);
+	info->query = TransformSelect(*PGPointerCast<duckdb_libpgquery::PGSelectStmt>(stmt.query), false);
 
-	if (stmt->aliases && stmt->aliases->length > 0) {
-		for (auto c = stmt->aliases->head; c != NULL; c = lnext(c)) {
-			auto node = reinterpret_cast<Node *>(c->data.ptr_value);
-			switch (node->type) {
-			case T_String: {
-				auto val = (postgres::Value *)node;
-				info.aliases.push_back(string(val->val.str));
+	PivotEntryCheck("view");
+
+	if (stmt.aliases && stmt.aliases->length > 0) {
+		for (auto c = stmt.aliases->head; c != nullptr; c = lnext(c)) {
+			auto val = PGPointerCast<duckdb_libpgquery::PGValue>(c->data.ptr_value);
+			switch (val->type) {
+			case duckdb_libpgquery::T_PGString: {
+				info->aliases.emplace_back(val->val.str);
 				break;
 			}
 			default:
 				throw NotImplementedException("View projection type");
 			}
 		}
-		if (info.aliases.size() < 1) {
+		if (info->aliases.empty()) {
 			throw ParserException("Need at least one column name in CREATE VIEW projection list");
 		}
 	}
 
-	if (stmt->options && stmt->options->length > 0) {
+	if (stmt.options && stmt.options->length > 0) {
 		throw NotImplementedException("VIEW options");
 	}
 
-	if (stmt->withCheckOption != ViewCheckOption::NO_CHECK_OPTION) {
+	if (stmt.withCheckOption != duckdb_libpgquery::PGViewCheckOption::PG_NO_CHECK_OPTION) {
 		throw NotImplementedException("VIEW CHECK options");
 	}
-
+	result->info = std::move(info);
 	return result;
 }
+
+} // namespace duckdb

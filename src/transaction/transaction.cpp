@@ -1,81 +1,24 @@
-#include "transaction/transaction.hpp"
+#include "duckdb/transaction/transaction.hpp"
+#include "duckdb/transaction/meta_transaction.hpp"
+#include "duckdb/transaction/transaction_manager.hpp"
+#include "duckdb/main/client_context.hpp"
 
-#include "catalog/catalog_entry/table_catalog_entry.hpp"
-#include "common/exception.hpp"
-#include "parser/column_definition.hpp"
-#include "storage/data_table.hpp"
-#include "storage/write_ahead_log.hpp"
+namespace duckdb {
 
-#include <cstring>
-
-using namespace duckdb;
-using namespace std;
-
-void Transaction::PushCatalogEntry(CatalogEntry *entry) {
-	// store only the pointer to the catalog entry
-	CatalogEntry **blob = (CatalogEntry **)undo_buffer.CreateEntry(UndoFlags::CATALOG_ENTRY, sizeof(CatalogEntry *));
-	*blob = entry;
+Transaction::Transaction(TransactionManager &manager_p, ClientContext &context_p)
+    : manager(manager_p), context(context_p.shared_from_this()), active_query(MAXIMUM_QUERY_ID) {
 }
 
-void Transaction::PushDeletedEntries(index_t offset, index_t count, StorageChunk *storage,
-                                     VersionInformation *version_pointers[]) {
-	for (index_t i = 0; i < count; i++) {
-		auto ptr = PushTuple(UndoFlags::INSERT_TUPLE, 0);
-		auto meta = (VersionInformation *)ptr;
-		meta->table = &storage->table;
-		meta->tuple_data = nullptr;
-		meta->version_number = transaction_id;
-		meta->prev.entry = offset + i;
-		meta->chunk = storage;
-		meta->next = nullptr;
-		version_pointers[i] = meta;
+Transaction::~Transaction() {
+}
+
+bool Transaction::IsReadOnly() {
+	auto ctxt = context.lock();
+	if (!ctxt) {
+		throw InternalException("Transaction::IsReadOnly() called after client context has been destroyed");
 	}
+	auto &db = manager.GetDB();
+	return MetaTransaction::Get(*ctxt).ModifiedDatabase().get() != &db;
 }
 
-void Transaction::PushTuple(UndoFlags flags, index_t offset, StorageChunk *storage) {
-	// push the tuple into the undo buffer
-	auto ptr = PushTuple(flags, storage->table.tuple_size);
-
-	auto meta = (VersionInformation *)ptr;
-	auto tuple_data = ptr + sizeof(VersionInformation);
-
-	// fill in the meta data for the tuple
-	meta->table = &storage->table;
-	meta->tuple_data = tuple_data;
-	meta->version_number = transaction_id;
-	meta->prev.entry = offset;
-	meta->chunk = storage;
-	meta->next = storage->version_pointers[offset];
-	storage->version_pointers[offset] = meta;
-
-	if (meta->next) {
-		meta->next->chunk = nullptr;
-		meta->next->prev.pointer = meta;
-	}
-
-	// now fill in the tuple data
-	storage->table.serializer.Serialize(storage->columns, offset, tuple_data);
-}
-
-void Transaction::PushQuery(string query) {
-	char *blob = (char *)undo_buffer.CreateEntry(UndoFlags::QUERY, query.size() + 1);
-	strcpy(blob, query.c_str());
-}
-
-data_ptr_t Transaction::PushTuple(UndoFlags flags, index_t data_size) {
-	return undo_buffer.CreateEntry(flags, sizeof(VersionInformation) + data_size);
-}
-
-void Transaction::Commit(WriteAheadLog *log, transaction_t commit_id) {
-	this->commit_id = commit_id;
-	// commit the undo buffer
-	undo_buffer.Commit(log, commit_id);
-	if (log) {
-		// commit any sequences that were used to the WAL
-		for (auto &entry : sequence_usage) {
-			log->WriteSequenceValue(entry.first, entry.second);
-		}
-		// flush the WAL
-		log->Flush();
-	}
-}
+} // namespace duckdb

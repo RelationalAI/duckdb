@@ -1,8 +1,10 @@
-#include "execution/operator/scan/physical_empty_result.hpp"
+#include "duckdb/execution/operator/scan/physical_empty_result.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-void PhysicalEmptyResult::GetChunkInternal(ClientContext &context, DataChunk &chunk, PhysicalOperatorState *state) {
-	state->finished = true;
+SourceResultType PhysicalEmptyResult::GetData(ExecutionContext &context, DataChunk &chunk,
+                                              OperatorSourceInput &input) const {
+	return SourceResultType::FINISHED;
 }
+
+} // namespace duckdb

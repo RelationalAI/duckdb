@@ -1,272 +1,189 @@
-#include "planner/planner.hpp"
+#include "duckdb/planner/planner.hpp"
 
-#include "common/serializer.hpp"
-#include "main/client_context.hpp"
-#include "main/database.hpp"
-#include "parser/statement/list.hpp"
-#include "planner/binder.hpp"
-#include "planner/bound_sql_statement.hpp"
-#include "planner/expression/bound_parameter_expression.hpp"
-#include "planner/logical_plan_generator.hpp"
-#include "planner/operator/logical_explain.hpp"
-#include "planner/operator/logical_prepare.hpp"
-#include "planner/statement/bound_select_statement.hpp"
-#include "planner/query_node/bound_select_node.hpp"
-#include "planner/query_node/bound_set_operation_node.hpp"
+#include "duckdb/common/serializer/binary_deserializer.hpp"
+#include "duckdb/common/serializer/binary_serializer.hpp"
+#include "duckdb/common/serializer/memory_stream.hpp"
+#include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/main/client_context.hpp"
+#include "duckdb/main/client_data.hpp"
+#include "duckdb/main/database.hpp"
+#include "duckdb/main/prepared_statement_data.hpp"
+#include "duckdb/main/query_profiler.hpp"
+#include "duckdb/planner/binder.hpp"
+#include "duckdb/planner/expression/bound_parameter_expression.hpp"
+#include "duckdb/transaction/meta_transaction.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-Planner::Planner(ClientContext &context) : binder(context), context(context) {
+Planner::Planner(ClientContext &context) : binder(Binder::CreateBinder(context)), context(context) {
 }
 
-void Planner::CreatePlan(SQLStatement &statement, vector<BoundParameterExpression *> *parameters) {
+static void CheckTreeDepth(const LogicalOperator &op, idx_t max_depth, idx_t depth = 0) {
+	if (depth >= max_depth) {
+		throw ParserException("Maximum tree depth of %lld exceeded in logical planner", max_depth);
+	}
+	for (auto &child : op.children) {
+		CheckTreeDepth(*child, max_depth, depth + 1);
+	}
+}
+
+void Planner::CreatePlan(SQLStatement &statement) {
+	auto &profiler = QueryProfiler::Get(context);
+	auto parameter_count = statement.n_param;
+
+	BoundParameterMap bound_parameters(parameter_data);
+
 	// first bind the tables and columns to the catalog
-	context.profiler.StartPhase("binder");
-	binder.parameters = parameters;
-	auto bound_statement = binder.Bind(statement);
-	context.profiler.EndPhase();
+	bool parameters_resolved = true;
+	try {
+		profiler.StartPhase("binder");
+		binder->parameters = &bound_parameters;
+		auto bound_statement = binder->Bind(statement);
+		profiler.EndPhase();
 
-	VerifyQuery(*bound_statement);
+		this->names = bound_statement.names;
+		this->types = bound_statement.types;
+		this->plan = std::move(bound_statement.plan);
 
-	this->names = bound_statement->GetNames();
-	this->sql_types = bound_statement->GetTypes();
+		auto max_tree_depth = ClientConfig::GetConfig(context).max_expression_depth;
+		CheckTreeDepth(*plan, max_tree_depth);
+	} catch (const ParameterNotResolvedException &ex) {
+		// parameter types could not be resolved
+		this->names = {"unknown"};
+		this->types = {LogicalTypeId::UNKNOWN};
+		this->plan = nullptr;
+		parameters_resolved = false;
+	} catch (const Exception &ex) {
+		auto &config = DBConfig::GetConfig(context);
 
-	// now create a logical query plan from the query
-	context.profiler.StartPhase("logical_planner");
-	LogicalPlanGenerator logical_planner(binder, context);
-	this->plan = logical_planner.CreatePlan(*bound_statement);
-	context.profiler.EndPhase();
+		this->plan = nullptr;
+		for (auto &extension_op : config.operator_extensions) {
+			auto bound_statement =
+			    extension_op->Bind(context, *this->binder, extension_op->operator_info.get(), statement);
+			if (bound_statement.plan != nullptr) {
+				this->names = bound_statement.names;
+				this->types = bound_statement.types;
+				this->plan = std::move(bound_statement.plan);
+				break;
+			}
+		}
+
+		if (!this->plan) {
+			throw;
+		}
+	} catch (std::exception &ex) {
+		throw;
+	}
+	this->properties = binder->properties;
+	this->properties.parameter_count = parameter_count;
+	properties.bound_all_parameters = !bound_parameters.rebind && parameters_resolved;
+
+	Planner::VerifyPlan(context, plan, bound_parameters.GetParametersPtr());
+
+	// set up a map of parameter number -> value entries
+	for (auto &kv : bound_parameters.GetParameters()) {
+		auto &identifier = kv.first;
+		auto &param = kv.second;
+		// check if the type of the parameter could be resolved
+		if (!param->return_type.IsValid()) {
+			properties.bound_all_parameters = false;
+			continue;
+		}
+		param->SetValue(Value(param->return_type));
+		value_map[identifier] = param;
+	}
+}
+
+shared_ptr<PreparedStatementData> Planner::PrepareSQLStatement(unique_ptr<SQLStatement> statement) {
+	auto copied_statement = statement->Copy();
+	// create a plan of the underlying statement
+	CreatePlan(std::move(statement));
+	// now create the logical prepare
+	auto prepared_data = make_shared<PreparedStatementData>(copied_statement->type);
+	prepared_data->unbound_statement = std::move(copied_statement);
+	prepared_data->names = names;
+	prepared_data->types = types;
+	prepared_data->value_map = std::move(value_map);
+	prepared_data->properties = properties;
+	prepared_data->catalog_version = MetaTransaction::Get(context).catalog_version;
+	return prepared_data;
 }
 
 void Planner::CreatePlan(unique_ptr<SQLStatement> statement) {
-	assert(statement);
+	D_ASSERT(statement);
 	switch (statement->type) {
-	case StatementType::SELECT:
-	case StatementType::INSERT:
-	case StatementType::COPY:
-	case StatementType::DELETE:
-	case StatementType::UPDATE:
-	case StatementType::CREATE_INDEX:
-	case StatementType::CREATE_TABLE:
-	case StatementType::EXECUTE:
+	case StatementType::SELECT_STATEMENT:
+	case StatementType::INSERT_STATEMENT:
+	case StatementType::COPY_STATEMENT:
+	case StatementType::DELETE_STATEMENT:
+	case StatementType::UPDATE_STATEMENT:
+	case StatementType::CREATE_STATEMENT:
+	case StatementType::DROP_STATEMENT:
+	case StatementType::ALTER_STATEMENT:
+	case StatementType::TRANSACTION_STATEMENT:
+	case StatementType::EXPLAIN_STATEMENT:
+	case StatementType::VACUUM_STATEMENT:
+	case StatementType::RELATION_STATEMENT:
+	case StatementType::CALL_STATEMENT:
+	case StatementType::EXPORT_STATEMENT:
+	case StatementType::PRAGMA_STATEMENT:
+	case StatementType::SHOW_STATEMENT:
+	case StatementType::SET_STATEMENT:
+	case StatementType::LOAD_STATEMENT:
+	case StatementType::EXTENSION_STATEMENT:
+	case StatementType::PREPARE_STATEMENT:
+	case StatementType::EXECUTE_STATEMENT:
+	case StatementType::LOGICAL_PLAN_STATEMENT:
+	case StatementType::ATTACH_STATEMENT:
+	case StatementType::DETACH_STATEMENT:
+	case StatementType::COPY_DATABASE_STATEMENT:
 		CreatePlan(*statement);
 		break;
-	case StatementType::CREATE_VIEW: {
-		auto &stmt = *((CreateViewStatement *)statement.get());
-
-		// plan the view as if it were a query so we can catch errors
-		SelectStatement dummy_statement;
-		dummy_statement.node = stmt.info->query->Copy();
-		CreatePlan((SQLStatement &)dummy_statement);
-		if (!plan) {
-			throw Exception("Query in view definition contains errors");
-		}
-
-		if (stmt.info->aliases.size() > dummy_statement.node->GetSelectList().size()) {
-			throw Exception("More VIEW aliases than columns in query result");
-		}
-
-		context.catalog.CreateView(context.ActiveTransaction(), stmt.info.get());
-		break;
-	}
-	case StatementType::CREATE_SCHEMA: {
-		auto &stmt = *((CreateSchemaStatement *)statement.get());
-		context.catalog.CreateSchema(context.ActiveTransaction(), stmt.info.get());
-		break;
-	}
-	case StatementType::CREATE_SEQUENCE: {
-		auto &stmt = *((CreateSequenceStatement *)statement.get());
-		context.catalog.CreateSequence(context.ActiveTransaction(), stmt.info.get());
-		break;
-	}
-	case StatementType::DROP: {
-		auto &stmt = *((DropStatement *)statement.get());
-		switch (stmt.info->type) {
-		case CatalogType::SEQUENCE:
-			context.catalog.DropSequence(context.ActiveTransaction(), stmt.info.get());
-			break;
-		case CatalogType::VIEW:
-			context.catalog.DropView(context.ActiveTransaction(), stmt.info.get());
-			break;
-		case CatalogType::TABLE:
-			context.catalog.DropTable(context.ActiveTransaction(), stmt.info.get());
-			break;
-		case CatalogType::INDEX:
-			context.catalog.DropIndex(context.ActiveTransaction(), stmt.info.get());
-			break;
-		case CatalogType::SCHEMA:
-			context.catalog.DropSchema(context.ActiveTransaction(), stmt.info.get());
-			break;
-		default:
-			throw NotImplementedException("Unimplemented catalog type for drop statement");
-		}
-		break;
-	}
-	case StatementType::ALTER: {
-		// TODO: create actual plan
-		auto &stmt = *((AlterTableStatement *)statement.get());
-		context.catalog.AlterTable(context, stmt.info.get());
-		break;
-	}
-	case StatementType::TRANSACTION: {
-		auto &stmt = *((TransactionStatement *)statement.get());
-		// TODO: create actual plan
-		switch (stmt.type) {
-		case TransactionType::BEGIN_TRANSACTION: {
-			if (context.transaction.IsAutoCommit()) {
-				// start the active transaction
-				// if autocommit is active, we have already called
-				// BeginTransaction by setting autocommit to false we
-				// prevent it from being closed after this query, hence
-				// preserving the transaction context for the next query
-				context.transaction.SetAutoCommit(false);
-			} else {
-				throw TransactionException("cannot start a transaction within a transaction");
-			}
-			break;
-		}
-		case TransactionType::COMMIT: {
-			if (context.transaction.IsAutoCommit()) {
-				throw TransactionException("cannot commit - no transaction is active");
-			} else {
-				// explicitly commit the current transaction
-				context.transaction.Commit();
-				context.transaction.SetAutoCommit(true);
-			}
-			break;
-		}
-		case TransactionType::ROLLBACK: {
-			if (context.transaction.IsAutoCommit()) {
-				throw TransactionException("cannot rollback - no transaction is active");
-			} else {
-				// explicitly rollback the current transaction
-				context.transaction.Rollback();
-				context.transaction.SetAutoCommit(true);
-			}
-			break;
-		}
-		default:
-			throw NotImplementedException("Unrecognized transaction type!");
-		}
-		break;
-	}
-	case StatementType::EXPLAIN: {
-		auto &stmt = *reinterpret_cast<ExplainStatement *>(statement.get());
-		CreatePlan(move(stmt.stmt));
-		auto logical_plan_unopt = plan->ToString();
-		auto explain = make_unique<LogicalExplain>(move(plan));
-		explain->logical_plan_unopt = logical_plan_unopt;
-		names = {"explain_key", "explain_value"};
-		sql_types = {SQLType(SQLTypeId::VARCHAR), SQLType(SQLTypeId::VARCHAR)};
-		plan = move(explain);
-		break;
-	}
-	case StatementType::PREPARE: {
-		auto &stmt = *reinterpret_cast<PrepareStatement *>(statement.get());
-		auto statement_type = stmt.statement->type;
-		// first create the plan for the to-be-prepared statement
-		vector<BoundParameterExpression *> bound_parameters;
-		CreatePlan(*stmt.statement, &bound_parameters);
-		// set up a map of parameter number -> value entries
-		unordered_map<index_t, PreparedValueEntry> value_map;
-		for (auto &expr : bound_parameters) {
-			// check if the type of the parameter could be resolved
-			if (expr->return_type == TypeId::INVALID) {
-				throw BinderException("Could not determine type of parameters: try adding explicit type casts");
-			}
-			auto value = make_unique<Value>(expr->return_type);
-			expr->value = value.get();
-			// check if the parameter number has been used before
-			if (value_map.find(expr->parameter_nr) != value_map.end()) {
-				throw BinderException("Duplicate parameter index. Use $1, $2 etc. to differentiate.");
-			}
-			PreparedValueEntry entry;
-			entry.value = move(value);
-			entry.target_type = expr->sql_type;
-			value_map[expr->parameter_nr] = move(entry);
-		}
-		auto prepare =
-		    make_unique<LogicalPrepare>(stmt.name, statement_type, names, sql_types, move(value_map), move(plan));
-		names = {"Success"};
-		sql_types = {SQLType(SQLTypeId::BOOLEAN)};
-		plan = move(prepare);
-		break;
-	}
-	case StatementType::DEALLOCATE: {
-		auto &stmt = *reinterpret_cast<DeallocateStatement *>(statement.get());
-		if (!context.prepared_statements->DropEntry(context.ActiveTransaction(), stmt.name, false)) {
-			// silently ignore
-		}
-		break;
-	}
 	default:
-		throw NotImplementedException("Statement of type %d not implemented in planner!", statement->type);
+		throw NotImplementedException("Cannot plan statement of type %s!", StatementTypeToString(statement->type));
 	}
 }
 
-void Planner::VerifyQuery(BoundSQLStatement &statement) {
-	if (!context.query_verification_enabled) {
+static bool OperatorSupportsSerialization(LogicalOperator &op) {
+	for (auto &child : op.children) {
+		if (!OperatorSupportsSerialization(*child)) {
+			return false;
+		}
+	}
+	return op.SupportSerialization();
+}
+
+void Planner::VerifyPlan(ClientContext &context, unique_ptr<LogicalOperator> &op,
+                         optional_ptr<bound_parameter_map_t> map) {
+#ifdef DUCKDB_ALTERNATIVE_VERIFY
+	// if alternate verification is enabled we run the original operator
+	return;
+#endif
+	if (!op || !ClientConfig::GetConfig(context).verify_serializer) {
 		return;
 	}
-	if (statement.type != StatementType::SELECT) {
+	//! SELECT only for now
+	if (!OperatorSupportsSerialization(*op)) {
 		return;
 	}
-	auto &select = (BoundSelectStatement &)statement;
-	VerifyNode(*select.node);
-}
 
-void Planner::VerifyNode(BoundQueryNode &node) {
-	if (node.type == QueryNodeType::SELECT_NODE) {
-		auto &select_node = (BoundSelectNode &)node;
-		vector<unique_ptr<Expression>> copies;
-		for (auto &expr : select_node.select_list) {
-			VerifyExpression(*expr, copies);
-		}
-		if (select_node.where_clause) {
-			VerifyExpression(*select_node.where_clause, copies);
-		}
-		for (auto &expr : select_node.groups) {
-			VerifyExpression(*expr, copies);
-		}
-		if (select_node.having) {
-			VerifyExpression(*select_node.having, copies);
-		}
-		for (auto &aggr : select_node.aggregates) {
-			VerifyExpression(*aggr, copies);
-		}
-		for (auto &window : select_node.windows) {
-			VerifyExpression(*window, copies);
-		}
+	// format (de)serialization of this operator
+	try {
+		MemoryStream stream;
+		BinarySerializer::Serialize(*op, stream, true);
+		stream.Rewind();
+		bound_parameter_map_t parameters;
+		auto new_plan = BinaryDeserializer::Deserialize<LogicalOperator>(stream, context, parameters);
 
-		// double loop to verify that (in)equality of hashes
-		for (index_t i = 0; i < copies.size(); i++) {
-			auto outer_hash = copies[i]->Hash();
-			for (index_t j = 0; j < copies.size(); j++) {
-				auto inner_hash = copies[j]->Hash();
-				if (outer_hash != inner_hash) {
-					// if hashes are not equivalent the expressions should not be equivalent
-					assert(!Expression::Equals(copies[i].get(), copies[j].get()));
-				}
-			}
+		if (map) {
+			*map = std::move(parameters);
 		}
-	} else {
-		assert(node.type == QueryNodeType::SET_OPERATION_NODE);
-		auto &setop_node = (BoundSetOperationNode &)node;
-		VerifyNode(*setop_node.left);
-		VerifyNode(*setop_node.right);
+		op = std::move(new_plan);
+	} catch (SerializationException &ex) {
+		// pass
+	} catch (NotImplementedException &ex) {
+		// pass
 	}
 }
 
-void Planner::VerifyExpression(Expression &expr, vector<unique_ptr<Expression>> &copies) {
-	if (expr.HasSubquery()) {
-		// can't copy subqueries
-		return;
-	}
-	// verify that the copy of expressions works
-	auto copy = expr.Copy();
-	// copy should have identical hash and identical equality function
-	assert(copy->Hash() == expr.Hash());
-	assert(Expression::Equals(copy.get(), &expr));
-	copies.push_back(move(copy));
-}
+} // namespace duckdb

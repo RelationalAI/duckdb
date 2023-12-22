@@ -1,19 +1,18 @@
-#include "planner/expression/bound_subquery_expression.hpp"
+#include "duckdb/planner/expression/bound_subquery_expression.hpp"
 
-#include "common/exception.hpp"
+#include "duckdb/common/exception.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-BoundSubqueryExpression::BoundSubqueryExpression(TypeId return_type)
-    : Expression(ExpressionType::SUBQUERY, ExpressionClass::BOUND_SUBQUERY, return_type) {
+BoundSubqueryExpression::BoundSubqueryExpression(LogicalType return_type)
+    : Expression(ExpressionType::SUBQUERY, ExpressionClass::BOUND_SUBQUERY, std::move(return_type)) {
 }
 
 string BoundSubqueryExpression::ToString() const {
 	return "SUBQUERY";
 }
 
-bool BoundSubqueryExpression::Equals(const BaseExpression *other_) const {
+bool BoundSubqueryExpression::Equals(const BaseExpression &other_p) const {
 	// equality between bound subqueries not implemented currently
 	return false;
 }
@@ -21,3 +20,10 @@ bool BoundSubqueryExpression::Equals(const BaseExpression *other_) const {
 unique_ptr<Expression> BoundSubqueryExpression::Copy() {
 	throw SerializationException("Cannot copy BoundSubqueryExpression");
 }
+
+bool BoundSubqueryExpression::PropagatesNullValues() const {
+	// TODO this can be optimized further by checking the actual subquery node
+	return false;
+}
+
+} // namespace duckdb

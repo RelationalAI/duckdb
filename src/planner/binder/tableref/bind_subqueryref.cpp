@@ -1,17 +1,28 @@
-#include "parser/tableref/subqueryref.hpp"
-#include "planner/binder.hpp"
-#include "planner/tableref/bound_subqueryref.hpp"
+#include "duckdb/parser/tableref/subqueryref.hpp"
+#include "duckdb/planner/binder.hpp"
+#include "duckdb/planner/tableref/bound_subqueryref.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-unique_ptr<BoundTableRef> Binder::Bind(SubqueryRef &ref) {
-	auto binder = make_unique<Binder>(context, this);
-	auto subquery = binder->Bind(*ref.subquery);
-	auto bind_index = GenerateTableIndex();
-	auto result = make_unique<BoundSubqueryRef>(move(binder), move(subquery), bind_index);
-
-	bind_context.AddSubquery(result->bind_index, ref.alias, ref, *result->subquery);
+unique_ptr<BoundTableRef> Binder::Bind(SubqueryRef &ref, optional_ptr<CommonTableExpressionInfo> cte) {
+	auto binder = Binder::CreateBinder(context, this);
+	binder->can_contain_nulls = true;
+	if (cte) {
+		binder->bound_ctes.insert(*cte);
+	}
+	binder->alias = ref.alias.empty() ? "unnamed_subquery" : ref.alias;
+	auto subquery = binder->BindNode(*ref.subquery->node);
+	idx_t bind_index = subquery->GetRootIndex();
+	string subquery_alias;
+	if (ref.alias.empty()) {
+		subquery_alias = "unnamed_subquery" + to_string(bind_index);
+	} else {
+		subquery_alias = ref.alias;
+	}
+	auto result = make_uniq<BoundSubqueryRef>(std::move(binder), std::move(subquery));
+	bind_context.AddSubquery(bind_index, subquery_alias, ref, *result->subquery);
 	MoveCorrelatedExpressions(*result->binder);
-	return move(result);
+	return std::move(result);
 }
+
+} // namespace duckdb

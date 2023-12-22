@@ -1,5 +1,7 @@
 #include "catch.hpp"
-#include "common/types/vector.hpp"
+#include "duckdb/common/types/vector.hpp"
+#include "duckdb/main/appender.hpp"
+#include "test_helpers.hpp"
 
 using namespace duckdb;
 using namespace std;
@@ -11,9 +13,7 @@ static void test_valid_str(Vector &a, const char *str) {
 }
 
 TEST_CASE("UTF8 error checking", "[utf8]") {
-	Vector a;
-	a.Initialize(TypeId::VARCHAR, 0);
-	a.count = 1;
+	Vector a(LogicalType::VARCHAR);
 
 	test_valid_str(a, "a");
 	test_valid_str(a, "\xc3\xb1");

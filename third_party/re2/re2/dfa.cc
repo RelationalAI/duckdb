@@ -47,10 +47,10 @@
 
 // Silence "zero-sized array in struct/union" warning for DFA::State::next_.
 #ifdef _MSC_VER
-#pragma warning(disable: 4200)
+//#pragma warning(disable: 4200)
 #endif
 
-namespace re2 {
+namespace duckdb_re2 {
 
 #if !defined(__linux__)  /* only Linux seems to have memrchr */
 static void* memrchr(const void* s, int c, size_t n) {
@@ -65,10 +65,6 @@ static void* memrchr(const void* s, int c, size_t n) {
 
 // Controls whether the DFA should bail out early if the NFA would be faster.
 static bool dfa_should_bail_when_slow = true;
-
-// Changing this to true compiles in prints that trace execution of the DFA.
-// Generates a lot of output -- only useful for debugging.
-static const bool ExtraDebug = false;
 
 // A DFA implementation of a regular expression program.
 // Since this is entirely a forward declaration mandated by C++,
@@ -129,14 +125,16 @@ class DFA {
 
 // Work around the bug affecting flexible array members in GCC 6.x (for x >= 1).
 // (https://gcc.gnu.org/bugzilla/show_bug.cgi?id=70932)
-#if !defined(__clang__) && defined(__GNUC__) && __GNUC__ == 6 && __GNUC_MINOR__ >= 1
-    std::atomic<State*> next_[0];   // Outgoing arrows from State,
-#else
-    std::atomic<State*> next_[];    // Outgoing arrows from State,
-#endif
-
+    std::atomic<State*> next_[1];    // Outgoing arrows from State,
                         // one per input byte class
   };
+
+  // Marks separate thread groups of different priority
+  // in the work queue when in leftmost-longest matching mode.
+  constexpr static int32_t Mark = -1;
+  // Separates the match IDs from the instructions in inst_.
+  // Used only for "many match" DFA states.
+  constexpr static int32_t MatchSep = -2;
 
   enum {
     kByteEndText = 256,         // imaginary byte at end of text
@@ -370,14 +368,6 @@ static inline const uint8_t* BytePtr(const void* v) {
 
 // Work queues
 
-// Marks separate thread groups of different priority
-// in the work queue when in leftmost-longest matching mode.
-#define Mark (-1)
-
-// Separates the match IDs from the instructions in inst_.
-// Used only for "many match" DFA states.
-#define MatchSep (-2)
-
 // Internally, the DFA uses a sparse array of
 // program instruction pointers as a work queue.
 // In leftmost longest mode, marks separate sections
@@ -442,8 +432,6 @@ DFA::DFA(Prog* prog, Prog::MatchKind kind, int64_t max_mem)
     q0_(NULL),
     q1_(NULL),
     mem_budget_(max_mem) {
-  if (ExtraDebug)
-    fprintf(stderr, "\nkind %d\n%s\n", (int)kind_, prog_->DumpUnanchored().c_str());
   int nmark = 0;
   if (kind_ == Prog::kLongestMatch)
     nmark = prog_->size();
@@ -619,8 +607,6 @@ DFA::State* DFA::WorkqToCachedState(Workq* q, Workq* mq, uint32_t flag) {
   uint32_t needflags = 0;  // flags needed by kInstEmptyWidth instructions
   bool sawmatch = false;   // whether queue contains guaranteed kInstMatch
   bool sawmark = false;    // whether queue contains a Mark
-  if (ExtraDebug)
-    fprintf(stderr, "WorkqToCachedState %s [%#x]", DumpWorkq(q).c_str(), flag);
   for (Workq::iterator it = q->begin(); it != q->end(); ++it) {
     int id = *it;
     if (sawmatch && (kind_ == Prog::kFirstMatch || q->is_mark(id)))
@@ -645,8 +631,6 @@ DFA::State* DFA::WorkqToCachedState(Workq* q, Workq* mq, uint32_t flag) {
             (kind_ != Prog::kLongestMatch || !sawmark) &&
             (flag & kFlagMatch)) {
           delete[] inst;
-          if (ExtraDebug)
-            fprintf(stderr, " -> FullMatchState\n");
           return FullMatchState;
         }
         FALLTHROUGH_INTENDED;
@@ -692,8 +676,6 @@ DFA::State* DFA::WorkqToCachedState(Workq* q, Workq* mq, uint32_t flag) {
   // if the state is *not* a matching state.
   if (n == 0 && flag == 0) {
     delete[] inst;
-    if (ExtraDebug)
-      fprintf(stderr, " -> DeadState\n");
     return DeadState;
   }
 
@@ -748,8 +730,6 @@ DFA::State* DFA::CachedState(int* inst, int ninst, uint32_t flag) {
   state.flag_ = flag;
   StateSet::iterator it = state_cache_.find(&state);
   if (it != state_cache_.end()) {
-    if (ExtraDebug)
-      fprintf(stderr, " -cached-> %s\n", DumpState(*it).c_str());
     return *it;
   }
 
@@ -779,9 +759,6 @@ DFA::State* DFA::CachedState(int* inst, int ninst, uint32_t flag) {
   memmove(s->inst_, inst, ninst*sizeof s->inst_[0]);
   s->ninst_ = ninst;
   s->flag_ = flag;
-  if (ExtraDebug)
-    fprintf(stderr, " -> %s\n", DumpState(s).c_str());
-
   // Put state in cache and return it.
   state_cache_.insert(s);
   return s;
@@ -979,10 +956,6 @@ void DFA::RunWorkqOnByte(Workq* oldq, Workq* newq,
         break;
     }
   }
-
-  if (ExtraDebug)
-    fprintf(stderr, "%s on %d[%#x] -> %s [%d]\n", DumpWorkq(oldq).c_str(),
-            c, flag, DumpWorkq(newq).c_str(), *ismatch);
 }
 
 // Processes input byte c in state, returning new state.
@@ -1306,7 +1279,7 @@ DFA::State* DFA::StateSaver::Restore() {
 // inline it to create the specialized ones.
 //
 // Note that matches are delayed by one byte, to make it easier to
-// accomodate match conditions depending on the next input byte (like $ and \b).
+// accommodate match conditions depending on the next input byte (like $ and \b).
 // When s->next[c]->IsMatch(), it means that there is a match ending just
 // *before* byte c.
 
@@ -1334,14 +1307,10 @@ inline bool DFA::InlinedSearchLoop(SearchParams* params,
   bool matched = false;
 
   State* s = start;
-  if (ExtraDebug)
-    fprintf(stderr, "@stx: %s\n", DumpState(s).c_str());
 
   if (s->IsMatch()) {
     matched = true;
     lastmatch = p;
-    if (ExtraDebug)
-      fprintf(stderr, "match @stx! [%s]\n", DumpState(s).c_str());
     if (params->matches != NULL && kind_ == Prog::kManyMatch) {
       for (int i = s->ninst_ - 1; i >= 0; i--) {
         int id = s->inst_[i];
@@ -1357,10 +1326,6 @@ inline bool DFA::InlinedSearchLoop(SearchParams* params,
   }
 
   while (p != ep) {
-    if (ExtraDebug)
-      fprintf(stderr, "@%td: %s\n",
-              p - bp, DumpState(s).c_str());
-
     if (have_first_byte && s == start) {
       // In start state, only way out is to find first_byte,
       // so use optimized assembly in memchr to skip ahead.
@@ -1464,9 +1429,6 @@ inline bool DFA::InlinedSearchLoop(SearchParams* params,
         lastmatch = p - 1;
       else
         lastmatch = p + 1;
-      if (ExtraDebug)
-        fprintf(stderr, "match @%td! [%s]\n",
-                lastmatch - bp, DumpState(s).c_str());
       if (params->matches != NULL && kind_ == Prog::kManyMatch) {
         for (int i = s->ninst_ - 1; i >= 0; i--) {
           int id = s->inst_[i];
@@ -1484,9 +1446,6 @@ inline bool DFA::InlinedSearchLoop(SearchParams* params,
 
   // Process one more byte to see if it triggers a match.
   // (Remember, matches are delayed one byte.)
-  if (ExtraDebug)
-    fprintf(stderr, "@etx: %s\n", DumpState(s).c_str());
-
   int lastbyte;
   if (run_forward) {
     if (params->text.end() == params->context.end())
@@ -1532,8 +1491,6 @@ inline bool DFA::InlinedSearchLoop(SearchParams* params,
   if (s->IsMatch()) {
     matched = true;
     lastmatch = p;
-    if (ExtraDebug)
-      fprintf(stderr, "match @etx! [%s]\n", DumpState(s).c_str());
     if (params->matches != NULL && kind_ == Prog::kManyMatch) {
       for (int i = s->ninst_ - 1; i >= 0; i--) {
         int id = s->inst_[i];
@@ -1691,11 +1648,6 @@ bool DFA::AnalyzeSearch(SearchParams* params) {
     }
   }
 
-  if (ExtraDebug)
-    fprintf(stderr, "anchored=%d fwd=%d flags=%#x state=%s first_byte=%d\n",
-            params->anchored, params->run_forward, flags,
-            DumpState(info->start).c_str(), info->first_byte.load());
-
   params->start = info->start;
   params->first_byte = info->first_byte.load(std::memory_order_acquire);
 
@@ -1766,13 +1718,6 @@ bool DFA::Search(const StringPiece& text,
   }
   *failed = false;
 
-  if (ExtraDebug) {
-    fprintf(stderr, "\nprogram:\n%s\n", prog_->DumpUnanchored().c_str());
-    fprintf(stderr, "text %s anchored=%d earliest=%d fwd=%d kind %d\n",
-            std::string(text).c_str(), anchored, want_earliest_match,
-            run_forward, kind_);
-  }
-
   RWLocker l(&cache_mutex_);
   SearchParams params(text, context, &l);
   params.anchored = anchored;
@@ -1793,8 +1738,6 @@ bool DFA::Search(const StringPiece& text,
       *epp = text.end();
     return true;
   }
-  if (ExtraDebug)
-    fprintf(stderr, "start %s\n", DumpState(params.start).c_str());
   bool ret = FastSearchLoop(&params);
   if (params.failed) {
     *failed = true;
@@ -2138,4 +2081,4 @@ bool Prog::PossibleMatchRange(std::string* min, std::string* max, int maxlen) {
   return GetDFA(kLongestMatch)->PossibleMatchRange(min, max, maxlen);
 }
 
-}  // namespace re2
+}  // namespace duckdb_re2

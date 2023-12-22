@@ -1,59 +1,106 @@
-#include "execution/index/art/art_key.hpp"
+#include "duckdb/execution/index/art/art_key.hpp"
 
-//! these are optimized and assume a particular byte order
-#define BSWAP8(x) ((uint8_t)((((uint8_t)(x)&0xf0) >> 4) | (((uint8_t)(x)&0x0f) << 4)))
+namespace duckdb {
 
-#define BSWAP16(x) ((uint16_t)((((uint16_t)(x)&0xff00) >> 8) | (((uint16_t)(x)&0x00ff) << 8)))
-
-#define BSWAP32(x)                                                                                                     \
-	((uint32_t)((((uint32_t)(x)&0xff000000) >> 24) | (((uint32_t)(x)&0x00ff0000) >> 8) |                               \
-	            (((uint32_t)(x)&0x0000ff00) << 8) | (((uint32_t)(x)&0x000000ff) << 24)))
-
-#define BSWAP64(x)                                                                                                     \
-	((uint64_t)((((uint64_t)(x)&0xff00000000000000ull) >> 56) | (((uint64_t)(x)&0x00ff000000000000ull) >> 40) |        \
-	            (((uint64_t)(x)&0x0000ff0000000000ull) >> 24) | (((uint64_t)(x)&0x000000ff00000000ull) >> 8) |         \
-	            (((uint64_t)(x)&0x00000000ff000000ull) << 8) | (((uint64_t)(x)&0x0000000000ff0000ull) << 24) |         \
-	            (((uint64_t)(x)&0x000000000000ff00ull) << 40) | (((uint64_t)(x)&0x00000000000000ffull) << 56)))
-
-void Key::convert_to_binary_comparable(bool isLittleEndian, TypeId type, uintptr_t tid) {
-	switch (type) {
-	case TypeId::TINYINT:
-		len = 1;
-		if (isLittleEndian) {
-			data[0] = BSWAP8(tid);
-		} else {
-			data[0] = tid;
-		}
-		data[0] = flipSign(data[0]);
-		break;
-	case TypeId::SMALLINT:
-		len = 2;
-		if (isLittleEndian) {
-			reinterpret_cast<uint16_t *>(data.get())[0] = BSWAP16(tid);
-		} else {
-			reinterpret_cast<uint16_t *>(data.get())[0] = tid;
-		}
-		data[0] = flipSign(data[0]);
-		break;
-	case TypeId::INTEGER:
-		len = 4;
-		if (isLittleEndian) {
-			reinterpret_cast<uint32_t *>(data.get())[0] = BSWAP32(tid);
-		} else {
-			reinterpret_cast<uint32_t *>(data.get())[0] = tid;
-		}
-		data[0] = flipSign(data[0]);
-		break;
-	case TypeId::BIGINT:
-		len = 8;
-		if (isLittleEndian) {
-			reinterpret_cast<uint64_t *>(data.get())[0] = BSWAP64(tid);
-		} else {
-			reinterpret_cast<uint64_t *>(data.get())[0] = tid;
-		}
-		data[0] = flipSign(data[0]);
-		break;
-	default:
-		throw NotImplementedException("Unimplemented type for ART index");
-	}
+ARTKey::ARTKey() : len(0) {
 }
+
+ARTKey::ARTKey(const data_ptr_t &data, const uint32_t &len) : len(len), data(data) {
+}
+
+ARTKey::ARTKey(ArenaAllocator &allocator, const uint32_t &len) : len(len) {
+	data = allocator.Allocate(len);
+}
+
+template <>
+ARTKey ARTKey::CreateARTKey(ArenaAllocator &allocator, const LogicalType &type, string_t value) {
+	uint32_t len = value.GetSize() + 1;
+	auto data = allocator.Allocate(len);
+	memcpy(data, value.GetData(), len - 1);
+
+	// FIXME: rethink this
+	if (type == LogicalType::BLOB || type == LogicalType::VARCHAR) {
+		// indexes cannot contain BLOBs (or BLOBs cast to VARCHARs) that contain zero bytes
+		for (uint32_t i = 0; i < len - 1; i++) {
+			if (data[i] == '\0') {
+				throw NotImplementedException("ART indexes cannot contain BLOBs with zero bytes.");
+			}
+		}
+	}
+
+	data[len - 1] = '\0';
+	return ARTKey(data, len);
+}
+
+template <>
+ARTKey ARTKey::CreateARTKey(ArenaAllocator &allocator, const LogicalType &type, const char *value) {
+	return ARTKey::CreateARTKey(allocator, type, string_t(value, strlen(value)));
+}
+
+template <>
+void ARTKey::CreateARTKey(ArenaAllocator &allocator, const LogicalType &type, ARTKey &key, string_t value) {
+	key.len = value.GetSize() + 1;
+	key.data = allocator.Allocate(key.len);
+	memcpy(key.data, value.GetData(), key.len - 1);
+
+	// FIXME: rethink this
+	if (type == LogicalType::BLOB || type == LogicalType::VARCHAR) {
+		// indexes cannot contain BLOBs (or BLOBs cast to VARCHARs) that contain zero bytes
+		for (uint32_t i = 0; i < key.len - 1; i++) {
+			if (key.data[i] == '\0') {
+				throw NotImplementedException("ART indexes cannot contain BLOBs with zero bytes.");
+			}
+		}
+	}
+
+	key.data[key.len - 1] = '\0';
+}
+
+template <>
+void ARTKey::CreateARTKey(ArenaAllocator &allocator, const LogicalType &type, ARTKey &key, const char *value) {
+	ARTKey::CreateARTKey(allocator, type, key, string_t(value, strlen(value)));
+}
+
+bool ARTKey::operator>(const ARTKey &k) const {
+	for (uint32_t i = 0; i < MinValue<uint32_t>(len, k.len); i++) {
+		if (data[i] > k.data[i]) {
+			return true;
+		} else if (data[i] < k.data[i]) {
+			return false;
+		}
+	}
+	return len > k.len;
+}
+
+bool ARTKey::operator>=(const ARTKey &k) const {
+	for (uint32_t i = 0; i < MinValue<uint32_t>(len, k.len); i++) {
+		if (data[i] > k.data[i]) {
+			return true;
+		} else if (data[i] < k.data[i]) {
+			return false;
+		}
+	}
+	return len >= k.len;
+}
+
+bool ARTKey::operator==(const ARTKey &k) const {
+	if (len != k.len) {
+		return false;
+	}
+	for (uint32_t i = 0; i < len; i++) {
+		if (data[i] != k.data[i]) {
+			return false;
+		}
+	}
+	return true;
+}
+
+void ARTKey::ConcatenateARTKey(ArenaAllocator &allocator, ARTKey &other_key) {
+
+	auto compound_data = allocator.Allocate(len + other_key.len);
+	memcpy(compound_data, data, len);
+	memcpy(compound_data + len, other_key.data, other_key.len);
+	len += other_key.len;
+	data = compound_data;
+}
+} // namespace duckdb

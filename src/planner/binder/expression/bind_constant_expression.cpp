@@ -1,10 +1,11 @@
-#include "parser/expression/constant_expression.hpp"
-#include "planner/expression/bound_constant_expression.hpp"
-#include "planner/expression_binder.hpp"
+#include "duckdb/parser/expression/constant_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/planner/expression_binder.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-BindResult ExpressionBinder::BindExpression(ConstantExpression &expr, count_t depth) {
-	return BindResult(make_unique<BoundConstantExpression>(expr.value), expr.sql_type);
+BindResult ExpressionBinder::BindExpression(ConstantExpression &expr, idx_t depth) {
+	return BindResult(make_uniq<BoundConstantExpression>(expr.value));
 }
+
+} // namespace duckdb

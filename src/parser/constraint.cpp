@@ -1,31 +1,18 @@
-#include "parser/constraint.hpp"
+#include "duckdb/parser/constraint.hpp"
 
-#include "common/printer.hpp"
-#include "common/serializer.hpp"
-#include "parser/constraints/list.hpp"
+#include "duckdb/common/printer.hpp"
+#include "duckdb/parser/constraints/list.hpp"
 
-using namespace duckdb;
-using namespace std;
+namespace duckdb {
 
-void Constraint::Serialize(Serializer &serializer) {
-	serializer.Write<ConstraintType>(type);
+Constraint::Constraint(ConstraintType type) : type(type) {
 }
 
-unique_ptr<Constraint> Constraint::Deserialize(Deserializer &source) {
-	auto type = source.Read<ConstraintType>();
-	switch (type) {
-	case ConstraintType::NOT_NULL:
-		return NotNullConstraint::Deserialize(source);
-	case ConstraintType::CHECK:
-		return CheckConstraint::Deserialize(source);
-	case ConstraintType::UNIQUE:
-		return UniqueConstraint::Deserialize(source);
-	default:
-		// don't know how to serialize this constraint type
-		return nullptr;
-	}
+Constraint::~Constraint() {
 }
 
-void Constraint::Print() {
+void Constraint::Print() const {
 	Printer::Print(ToString());
 }
+
+} // namespace duckdb
